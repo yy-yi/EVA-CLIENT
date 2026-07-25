@@ -1356,13 +1356,18 @@ class EpisodeLogger:
     # -- meta writers -----------------------------------------------------------
 
     def _eval_existing_episode_index(self, episode_meta: dict[str, Any]) -> int | None:
-        """Episode index of a prior recording of this (prompt, trial) cell, or None.
+        """Episode index of a prior recording of this eval cell, or None.
 
-        Used so an eval RE-RUN overwrites the same trial's data in place instead of
-        appending. Matches on (prompt, trial) — the cell identity the operator scores —
-        scanning meta/episodes.jsonl. Returns None when prompt/trial are absent (non-eval
-        recordings) or the cell has no prior episode.
+        Used so an eval RE-RUN overwrites the same cell's data in place instead of
+        appending. Prefers ``clip_id``, which identifies the cell exactly; a benchmark
+        may reuse one prompt across several scenes, so (prompt, trial) alone would
+        alias distinct cells onto one index and silently overwrite them. Falls back to
+        (prompt, trial) for recordings that carry no clip_id. Returns None when neither
+        key is present (non-eval recordings) or the cell has no prior episode.
         """
+        clip_id = episode_meta.get("clip_id")
+        if clip_id:
+            return self._episode_index_for_clip_id(str(clip_id))
         prompt = episode_meta.get("prompt")
         trial = episode_meta.get("trial")
         if prompt is None or trial is None:
