@@ -103,6 +103,8 @@ class _CollectionTransport:
         self.hil_modes: list[str] = []
         self.published: list[tuple[str, np.ndarray]] = []
         self.sleep_count = 0
+        self.lockstep = False
+        self.action_capture_prepared = 0
 
     def supports_collection(self) -> bool:
         return True
@@ -152,6 +154,12 @@ class _CollectionTransport:
 
     def has_sim_publishers(self) -> bool:
         return False
+
+    def requires_fresh_observation_for_action(self) -> bool:
+        return self.lockstep
+
+    def prepare_action_observation_capture(self) -> None:
+        self.action_capture_prepared += 1
 
     def publish_action(self, action: np.ndarray, target: str = "real") -> None:
         self.events.append(f"publish:{target}")
@@ -300,6 +308,7 @@ def test_eval_episode_logger_uses_async_save(tmp_path):
 
     assert runtime.episode_logger is not None
     assert runtime.episode_logger._async_save is True
+    assert runtime.transport.action_capture_prepared == 1
 
 
 def test_rollout_episode_logger_uses_async_save(tmp_path):
@@ -309,6 +318,7 @@ def test_rollout_episode_logger_uses_async_save(tmp_path):
 
     assert runtime.rollout_episode_logger is not None
     assert runtime.rollout_episode_logger._async_save is True
+    assert runtime.transport.action_capture_prepared == 1
 
 
 def test_record_executed_action_ingests_raw_snapshot_for_active_loggers():
@@ -360,6 +370,7 @@ def test_publish_next_action_captures_observation_before_sim_action():
     runtime, session = _runtime_and_session()
     runtime.infer_strategy = _LoopStrategy()
     runtime.episode_logger = _RawEpisodeLogger()
+    runtime.transport.lockstep = True
     runtime.transport.raw_snapshots.append(
         RawCollectionSnapshot(timestamp=3.0, decode_raw=lambda: CollectionRawBatch())
     )
@@ -388,6 +399,7 @@ def test_publish_next_action_waits_for_fresh_recording_observation():
     strategy = _LoopStrategy()
     runtime.infer_strategy = strategy
     runtime.episode_logger = _RawEpisodeLogger()
+    runtime.transport.lockstep = True
     for mode in (SessionMode.SIM, SessionMode.REAL):
         session.mode = mode
 
@@ -397,6 +409,61 @@ def test_publish_next_action_waits_for_fresh_recording_observation():
         assert runtime.transport.events == ["capture"]
         assert runtime.transport.published == []
         runtime.transport.events.clear()
+
+
+def test_publish_next_action_keeps_non_lockstep_async_publish_cadence():
+    class _LoopStrategy:
+        def __init__(self) -> None:
+            self.pop_count = 0
+
+        def is_loop_running(self) -> bool:
+            return True
+
+        def pop_next_action(self) -> np.ndarray:
+            self.pop_count += 1
+            return np.array([0.7, 0.8], dtype=np.float32)
+
+    runtime, session = _runtime_and_session()
+    strategy = _LoopStrategy()
+    runtime.infer_strategy = strategy
+    runtime.episode_logger = _RawEpisodeLogger()
+    session.mode = SessionMode.REAL
+
+    for _ in range(3):
+        assert control.publish_next_action(_config(), runtime, session)
+
+    assert strategy.pop_count == 3
+    assert len(runtime.transport.published) == 3
+    assert runtime.transport.events == [
+        "publish:real",
+        "capture",
+        "publish:real",
+        "capture",
+        "publish:real",
+        "capture",
+    ]
+
+
+def test_publish_next_action_captures_non_lockstep_recording_after_publish():
+    class _LoopStrategy:
+        def is_loop_running(self) -> bool:
+            return True
+
+        def pop_next_action(self) -> np.ndarray:
+            return np.array([0.7, 0.8], dtype=np.float32)
+
+    runtime, session = _runtime_and_session()
+    runtime.infer_strategy = _LoopStrategy()
+    runtime.episode_logger = _RawEpisodeLogger()
+    runtime.transport.raw_snapshots.append(
+        RawCollectionSnapshot(timestamp=3.0, decode_raw=lambda: CollectionRawBatch())
+    )
+    session.mode = SessionMode.REAL
+
+    assert control.publish_next_action(_config(), runtime, session)
+
+    assert runtime.transport.events == ["publish:real", "capture", "qpos"]
+    assert len(runtime.episode_logger.snapshots) == 1
 
 
 def _observation(timestamp: float = 1.0) -> Observation:

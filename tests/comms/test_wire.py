@@ -29,7 +29,7 @@ from transport.zmq import (
 )
 
 
-def _build_zmq_transport_with_fake_readers(monkeypatch):
+def _build_zmq_transport_with_fake_readers(monkeypatch, lockstep: bool = False):
     readers = []
 
     class _Reader:
@@ -46,6 +46,9 @@ def _build_zmq_transport_with_fake_readers(monkeypatch):
             self.frame = None
             self.collection_frame = None
             self.qpos = None
+            self.raw_snapshot = None
+            self.statuses = collections.deque()
+            self.status = {"lockstep": False, "applied_action_id": None}
             self.age = None
             self.calls = []
             self.closed = False
@@ -63,6 +66,23 @@ def _build_zmq_transport_with_fake_readers(monkeypatch):
             self.calls.append("qpos")
             return self.qpos
 
+        def acquire_collection_raw(self):
+            self.calls.append("raw")
+            snapshot = self.raw_snapshot
+            self.raw_snapshot = None
+            return snapshot
+
+        def clear_collection_backlog(self):
+            self.calls.append("clear")
+            self.raw_snapshot = None
+            return None
+
+        def get_task_status(self):
+            self.calls.append("status")
+            if self.statuses:
+                self.status = self.statuses.popleft()
+            return self.status
+
         def seconds_since_last_recv(self):
             return self.age
 
@@ -72,12 +92,16 @@ def _build_zmq_transport_with_fake_readers(monkeypatch):
     class _Socket:
         def __init__(self) -> None:
             self.closed = False
+            self.payloads = []
 
         def connect(self, _endpoint) -> None:
             return None
 
         def close(self, linger=0) -> None:
             self.closed = True
+
+        def send(self, payload) -> None:
+            self.payloads.append(payload)
 
     class _Context:
         def __init__(self) -> None:
@@ -102,10 +126,12 @@ def _build_zmq_transport_with_fake_readers(monkeypatch):
             pub_endpoint="tcp://127.0.0.1:5556",
             render_on_demand=False,
             render_timeout_s=5.0,
+            action_observation_lockstep=lockstep,
+            lockstep_timeout_s=1.0,
             record_images=True,
         )
     )
-    robot = types.SimpleNamespace(name="test_robot")
+    robot = types.SimpleNamespace(name="test_robot", total_action_dim=14)
     return (
         ZmqTransport(cast(ConfigDict, config), cast(Robot, robot)),
         readers,
@@ -135,6 +161,8 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
         robot_name="piper",
         split="train",
         prompt="pick up the banana",
+        applied_action_id=17,
+        lockstep=True,
         scene_state={
             "objects": [{"asset_id": "banana", "position": [0.0, 0.1, 0.2]}],
             "robot_base": {"left_arm": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]},
@@ -152,6 +180,8 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
     assert back.robot_name == "piper"
     assert back.split == "train"
     assert back.prompt == "pick up the banana"
+    assert back.applied_action_id == 17
+    assert back.lockstep
     assert back.scene_state == obs.scene_state
     assert back.camera_resolution == (224, 224)
     assert set(back.images) == set(images)
@@ -446,55 +476,6 @@ def test_zmq_raw_collection_reader_yields_before_draining_unbounded_socket():
     assert len(payloads) == 5
 
 
-def test_zmq_latest_raw_collection_discards_backlog_and_returns_newest():
-    robot = ROBOT_REGISTRY.build("agilex_piper")
-
-    def payload(index: int) -> bytes:
-        return pack_observation(
-            WireObservation(
-                t=float(index),
-                images={},
-                state={
-                    group.name: np.full(group.dof, index, dtype=np.float32)
-                    for group in robot.actuator_groups
-                },
-            )
-        )
-
-    payloads = collections.deque([payload(1), payload(2)])
-
-    class _Again(Exception):
-        pass
-
-    class _Sub:
-        def recv(self, _flags):
-            if not payloads:
-                raise _Again
-            return payloads.popleft()
-
-    reader = object.__new__(_ObservationReader)
-    reader._robot = robot
-    reader._record_images = True
-    reader._zmq = types.SimpleNamespace(NOBLOCK=object(), Again=_Again)
-    reader._sub = _Sub()
-    reader._raw_collection_queue = collections.deque([payload(0)])
-    reader._freshness = types.SimpleNamespace(mark=lambda: None)  # type: ignore[reportAttributeAccessIssue]
-    reader._lock = threading.Lock()
-
-    snapshot = reader.acquire_latest_collection_raw()
-
-    assert snapshot is not None
-    assert snapshot.timestamp == 2.0
-    assert not payloads
-    assert not reader._raw_collection_queue
-    batch = snapshot.decode_raw()
-    for group in robot.actuator_groups:
-        np.testing.assert_allclose(
-            batch.vectors[f"state_qpos:{group.name}"][0].value,
-            np.full(group.dof, 2, dtype=np.float32),
-        )
-
-
 def test_zmq_clear_collection_backlog_drops_raw_queue_and_returns_cutoff(monkeypatch):
     monkeypatch.setattr(zmq_transport.time, "monotonic", lambda: 123.0)
     payloads = collections.deque(
@@ -659,12 +640,18 @@ def test_zmq_reader_keeps_multi_camera_visualization_cache():
 
 
 def test_action_roundtrip_preserves_vector_target_and_timestamp():
-    action = WireAction(t=9.0, action=np.arange(14, dtype=np.float32), target="sim")
+    action = WireAction(
+        t=9.0,
+        action=np.arange(14, dtype=np.float32),
+        target="sim",
+        action_id=23,
+    )
 
     back = unpack_action(pack_action(action))
 
     assert back.t == 9.0
     assert back.target == "sim"
+    assert back.action_id == 23
     np.testing.assert_allclose(back.action, np.arange(14))
 
 
@@ -676,17 +663,29 @@ def test_action_default_target_is_real():
 def test_zmq_transport_uses_separate_internal_readers(monkeypatch):
     transport, readers, _ctx = _build_zmq_transport_with_fake_readers(monkeypatch)
 
+    assert len(readers) == 3
+    transport.prepare_action_observation_capture()
+    transport.prepare_action_observation_capture()
+    assert len(readers) == 4
     readers[0].frame = "frame"
     readers[1].collection_frame = "collection"
     readers[2].qpos = "qpos"
+    readers[3].raw_snapshot = "raw"
 
     assert transport.get_frame() == "frame"
     assert transport.get_collection_frame() == "collection"
     assert transport.get_latest_qpos() == "qpos"
+    assert transport.acquire_latest_collection_raw() == "raw"
     assert readers[0].calls == ["frame"]
     assert readers[1].calls == ["collection"]
     assert readers[2].calls == ["qpos"]
-    assert [reader.preserve_collection_backlog for reader in readers] == [False, True, False]
+    assert readers[3].calls == ["raw"]
+    assert [reader.preserve_collection_backlog for reader in readers] == [
+        False,
+        True,
+        False,
+        False,
+    ]
 
 
 def test_zmq_transport_requests_a_new_image_for_on_demand_frame():
@@ -708,6 +707,7 @@ def test_zmq_transport_requests_a_new_image_for_on_demand_frame():
     reader = _Reader()
     render_requests = []
     transport = object.__new__(ZmqTransport)
+    transport._action_observation_lockstep = False
     transport._render_on_demand = True
     transport._render_timeout_s = 1.0
     transport._closed = False
@@ -828,6 +828,30 @@ def test_zmq_transport_reports_freshest_reader_and_closes_all_readers(monkeypatc
 
     assert all(reader.closed for reader in readers)
     assert ctx.sockets[0].closed
+
+
+def test_zmq_lockstep_action_waits_for_matching_ack(monkeypatch):
+    monkeypatch.setattr(zmq_transport.time, "sleep", lambda _seconds: None)
+    transport, readers, ctx = _build_zmq_transport_with_fake_readers(
+        monkeypatch, lockstep=True
+    )
+    assert len(readers) == 4
+    readers[3].statuses.extend(
+        [
+            {"lockstep": True, "applied_action_id": None},
+            {"lockstep": True, "applied_action_id": None},
+            {"lockstep": True, "applied_action_id": 0},
+        ]
+    )
+
+    transport.publish_action(np.arange(14, dtype=np.float32), target="real")
+
+    assert transport._lockstep_action_id == 1
+    assert not transport.has_sim_publishers()
+    sent = [unpack_action(payload) for payload in ctx.sockets[0].payloads]
+    assert len(sent) == 1
+    assert sent[0].action_id == 0
+    np.testing.assert_allclose(sent[0].action, np.arange(14))
 
 
 def test_zmq_transport_sends_collection_control_actions(monkeypatch):

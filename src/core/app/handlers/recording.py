@@ -204,6 +204,7 @@ def maybe_build_rollout_episode_logger(config: ConfigDict, runtime: RuntimeState
         save_image_height=storage.get("image_height"),
         save_image_width=storage.get("image_width"),
     )
+    runtime.transport.prepare_action_observation_capture()
 
 
 def begin_rollout_save_episode(
@@ -214,6 +215,7 @@ def begin_rollout_save_episode(
     logger_obj = runtime.rollout_episode_logger
     if logger_obj is None:
         return
+    runtime.transport.prepare_action_observation_capture()
     if logger_obj.has_active_episode:
         logger_obj.cancel_episode("superseded by new rollout")
     runtime.rollout_save_ready = False
@@ -427,11 +429,13 @@ def rebuild_eval_episode_logger(config: ConfigDict, runtime: RuntimeState) -> No
         save_image_height=storage.get("image_height"),
         save_image_width=storage.get("image_width"),
     )
+    runtime.transport.prepare_action_observation_capture()
 
 
 def start_episode(runtime: RuntimeState, session: SessionState) -> None:
     """Begin one episode = one inference run (status -> RUNNING)."""
     if runtime.episode_logger is not None:
+        runtime.transport.prepare_action_observation_capture()
         runtime.transport.clear_collection_backlog()
         runtime.episode_logger.start_episode(task=format_task_label(session.selected_task))
         _stamp_scene_meta(runtime, runtime.episode_logger)

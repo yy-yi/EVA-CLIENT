@@ -101,6 +101,14 @@ class TransportBridge(abc.ABC):
         """True if the backend can also publish actions to a simulation target."""
         return False
 
+    def requires_fresh_observation_for_action(self) -> bool:
+        """True when publishing an action requires a fresh pre-action observation."""
+        return False
+
+    def prepare_action_observation_capture(self) -> None:
+        """Prepare transport resources used to pair observations with executed actions."""
+        return None
+
     def is_offline(self) -> bool:
         """True if this transport has no live robot link (replay/synthetic/degraded).
 

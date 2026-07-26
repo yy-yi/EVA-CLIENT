@@ -370,11 +370,9 @@ def publish_real_action_with_preview(
     already frozen on the staged playback). When a session is given, the executed
     action is paired with the current obs in the episode loggers.
     """
-    if recording_context is None:
-        _, snapshot, state_qpos = (
-            capture_action_observation(runtime) if session is not None else (False, None, None)
-        )
-    else:
+    snapshot = None
+    state_qpos = None
+    if recording_context is not None:
         snapshot, state_qpos = recording_context
     should_preview = runtime.transport.has_sim_publishers() and (
         session is None or session.pending_real_chunk is None
@@ -383,6 +381,8 @@ def publish_real_action_with_preview(
         publish_action(runtime, action, target=OutputTarget.SIM.value)
     publish_action(runtime, action, target=OutputTarget.REAL.value)
     if session is not None:
+        if recording_context is None:
+            _, snapshot, state_qpos = capture_action_observation(runtime)
         record_executed_action(
             config,
             session,
@@ -969,9 +969,16 @@ def publish_next_action(config: ConfigDict, runtime: RuntimeState, session: Sess
 
     # Continuous mode: pop individual actions from the buffer
     if strategy is not None and strategy.is_loop_running():
-        recording_active, snapshot, state_qpos = capture_action_observation(runtime)
-        if recording_active and snapshot is None:
-            return False
+        requires_fresh_observation = (
+            runtime.transport.requires_fresh_observation_for_action()
+        )
+        recording_active = False
+        snapshot = None
+        state_qpos = None
+        if requires_fresh_observation:
+            recording_active, snapshot, state_qpos = capture_action_observation(runtime)
+            if recording_active and snapshot is None:
+                return False
         action = strategy.pop_next_action()
         if action is None:
             return False  # buffer empty, skip this tick
@@ -985,6 +992,8 @@ def publish_next_action(config: ConfigDict, runtime: RuntimeState, session: Sess
         if sim_only:
             publish_action(runtime, action, target=OutputTarget.SIM.value)
             session.sim_preview_qpos = action.copy()
+            if not requires_fresh_observation:
+                _, snapshot, state_qpos = capture_action_observation(runtime)
             record_executed_action(
                 config,
                 session,
@@ -999,7 +1008,9 @@ def publish_next_action(config: ConfigDict, runtime: RuntimeState, session: Sess
                 runtime,
                 action,
                 session=session,
-                recording_context=(snapshot, state_qpos),
+                recording_context=(
+                    (snapshot, state_qpos) if requires_fresh_observation else None
+                ),
             )
         session.step_index += 1
         return True
@@ -1007,9 +1018,14 @@ def publish_next_action(config: ConfigDict, runtime: RuntimeState, session: Sess
     # Fallback: chunk-based flow (sync mode or no strategy)
     if not ensure_action_chunk(config, runtime, session) or session.action_chunk is None:
         return False
-    recording_active, snapshot, state_qpos = capture_action_observation(runtime)
-    if recording_active and snapshot is None:
-        return False
+    requires_fresh_observation = runtime.transport.requires_fresh_observation_for_action()
+    recording_active = False
+    snapshot = None
+    state_qpos = None
+    if requires_fresh_observation:
+        recording_active, snapshot, state_qpos = capture_action_observation(runtime)
+        if recording_active and snapshot is None:
+            return False
     action = apply_gripper_control_overrides(
         runtime, session.action_chunk[session.chunk_index], session
     )
@@ -1024,6 +1040,8 @@ def publish_next_action(config: ConfigDict, runtime: RuntimeState, session: Sess
     if sim_only:
         publish_action(runtime, action, target=OutputTarget.SIM.value)
         session.sim_preview_qpos = action.copy()
+        if not requires_fresh_observation:
+            _, snapshot, state_qpos = capture_action_observation(runtime)
         record_executed_action(
             config,
             session,
@@ -1038,7 +1056,9 @@ def publish_next_action(config: ConfigDict, runtime: RuntimeState, session: Sess
             runtime,
             action,
             session=session,
-            recording_context=(snapshot, state_qpos),
+            recording_context=(
+                (snapshot, state_qpos) if requires_fresh_observation else None
+            ),
         )
 
     is_sync = strategy is not None and not strategy.runs_background_loop
