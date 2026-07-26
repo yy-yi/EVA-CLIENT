@@ -97,6 +97,7 @@ class _CollectionTransport:
         self.latest_qpos = np.array([0.1, 0.2], dtype=np.float32)
         self.collection_frames: list[Observation] = []
         self.raw_snapshots: list[RawCollectionSnapshot] = []
+        self.events: list[str] = []
         self.diagnostics = ""
         self.hil_resets = 0
         self.hil_modes: list[str] = []
@@ -116,6 +117,7 @@ class _CollectionTransport:
         self.cleared += 1
 
     def get_latest_qpos(self) -> np.ndarray | None:
+        self.events.append("qpos")
         return self.latest_qpos.copy()
 
     def get_collection_frame(self) -> Observation | None:
@@ -131,6 +133,14 @@ class _CollectionTransport:
             return None
         return self.raw_snapshots.pop(0)
 
+    def acquire_latest_collection_raw(self):
+        self.events.append("capture")
+        if not self.raw_snapshots:
+            return None
+        snapshot = self.raw_snapshots[-1]
+        self.raw_snapshots.clear()
+        return snapshot
+
     def collection_diagnostics(self) -> str:
         return self.diagnostics
 
@@ -144,6 +154,7 @@ class _CollectionTransport:
         return False
 
     def publish_action(self, action: np.ndarray, target: str = "real") -> None:
+        self.events.append(f"publish:{target}")
         self.published.append((target, np.asarray(action, dtype=np.float32).copy()))
 
     def create_rate(self, _hz: float):
@@ -172,6 +183,8 @@ class _ActiveRolloutLogger:
 
 
 class _RawEpisodeLogger:
+    has_active_episode = True
+
     def __init__(self) -> None:
         self.snapshots: list[RawCollectionSnapshot] = []
         self.actions: list[np.ndarray] = []
@@ -317,7 +330,16 @@ def test_record_executed_action_ingests_raw_snapshot_for_active_loggers():
     runtime.transport.raw_snapshots.append(snapshot)
     action = np.array([0.7, 0.8], dtype=np.float32)
 
-    recording.record_executed_action(_config(), session, action, runtime)
+    active, captured, state_qpos = recording.capture_action_observation(runtime)
+    assert active
+    recording.record_executed_action(
+        _config(),
+        session,
+        action,
+        runtime,
+        snapshot=captured,
+        state_qpos=state_qpos,
+    )
 
     assert eval_logger.snapshots == [snapshot]
     assert rollout_logger.snapshots == [snapshot]
@@ -325,6 +347,56 @@ def test_record_executed_action_ingests_raw_snapshot_for_active_loggers():
     np.testing.assert_allclose(rollout_logger.actions[0], action)
     np.testing.assert_allclose(eval_logger.states[0], runtime.transport.latest_qpos)
     np.testing.assert_allclose(rollout_logger.states[0], runtime.transport.latest_qpos)
+
+
+def test_publish_next_action_captures_observation_before_sim_action():
+    class _LoopStrategy:
+        def is_loop_running(self) -> bool:
+            return True
+
+        def pop_next_action(self) -> np.ndarray:
+            return np.array([0.7, 0.8], dtype=np.float32)
+
+    runtime, session = _runtime_and_session()
+    runtime.infer_strategy = _LoopStrategy()
+    runtime.episode_logger = _RawEpisodeLogger()
+    runtime.transport.raw_snapshots.append(
+        RawCollectionSnapshot(timestamp=3.0, decode_raw=lambda: CollectionRawBatch())
+    )
+    session.mode = SessionMode.SIM
+
+    assert control.publish_next_action(_config(), runtime, session)
+
+    assert runtime.transport.events == ["capture", "qpos", "publish:sim"]
+    assert len(runtime.episode_logger.snapshots) == 1
+    np.testing.assert_allclose(runtime.episode_logger.actions[0], [0.7, 0.8])
+
+
+def test_publish_next_action_waits_for_fresh_recording_observation():
+    class _LoopStrategy:
+        def __init__(self) -> None:
+            self.pop_count = 0
+
+        def is_loop_running(self) -> bool:
+            return True
+
+        def pop_next_action(self) -> np.ndarray:
+            self.pop_count += 1
+            return np.array([0.7, 0.8], dtype=np.float32)
+
+    runtime, session = _runtime_and_session()
+    strategy = _LoopStrategy()
+    runtime.infer_strategy = strategy
+    runtime.episode_logger = _RawEpisodeLogger()
+    for mode in (SessionMode.SIM, SessionMode.REAL):
+        session.mode = mode
+
+        assert not control.publish_next_action(_config(), runtime, session)
+
+        assert strategy.pop_count == 0
+        assert runtime.transport.events == ["capture"]
+        assert runtime.transport.published == []
+        runtime.transport.events.clear()
 
 
 def _observation(timestamp: float = 1.0) -> Observation:

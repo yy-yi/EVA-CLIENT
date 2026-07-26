@@ -446,6 +446,55 @@ def test_zmq_raw_collection_reader_yields_before_draining_unbounded_socket():
     assert len(payloads) == 5
 
 
+def test_zmq_latest_raw_collection_discards_backlog_and_returns_newest():
+    robot = ROBOT_REGISTRY.build("agilex_piper")
+
+    def payload(index: int) -> bytes:
+        return pack_observation(
+            WireObservation(
+                t=float(index),
+                images={},
+                state={
+                    group.name: np.full(group.dof, index, dtype=np.float32)
+                    for group in robot.actuator_groups
+                },
+            )
+        )
+
+    payloads = collections.deque([payload(1), payload(2)])
+
+    class _Again(Exception):
+        pass
+
+    class _Sub:
+        def recv(self, _flags):
+            if not payloads:
+                raise _Again
+            return payloads.popleft()
+
+    reader = object.__new__(_ObservationReader)
+    reader._robot = robot
+    reader._record_images = True
+    reader._zmq = types.SimpleNamespace(NOBLOCK=object(), Again=_Again)
+    reader._sub = _Sub()
+    reader._raw_collection_queue = collections.deque([payload(0)])
+    reader._freshness = types.SimpleNamespace(mark=lambda: None)  # type: ignore[reportAttributeAccessIssue]
+    reader._lock = threading.Lock()
+
+    snapshot = reader.acquire_latest_collection_raw()
+
+    assert snapshot is not None
+    assert snapshot.timestamp == 2.0
+    assert not payloads
+    assert not reader._raw_collection_queue
+    batch = snapshot.decode_raw()
+    for group in robot.actuator_groups:
+        np.testing.assert_allclose(
+            batch.vectors[f"state_qpos:{group.name}"][0].value,
+            np.full(group.dof, 2, dtype=np.float32),
+        )
+
+
 def test_zmq_clear_collection_backlog_drops_raw_queue_and_returns_cutoff(monkeypatch):
     monkeypatch.setattr(zmq_transport.time, "monotonic", lambda: 123.0)
     payloads = collections.deque(

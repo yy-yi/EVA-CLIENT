@@ -575,14 +575,23 @@ class _ObservationReader:
                 return None
             return self._raw_collection_queue.popleft()
 
-    def acquire_collection_raw(self) -> RawCollectionSnapshot | None:
-        """Capture one raw collection payload and expose it as timestamped streams.
+    def _drain_latest_raw_collection(self) -> bytes | None:
+        """Drain queued SUB messages and return only the newest raw payload."""
+        with self._lock:
+            newest = self._raw_collection_queue[-1] if self._raw_collection_queue else None
+            self._raw_collection_queue.clear()
+            got_message = False
+            while True:
+                try:
+                    newest = self._sub.recv(self._zmq.NOBLOCK)
+                except self._zmq.Again:
+                    break
+                got_message = True
+            if got_message:
+                self._freshness.mark()
+            return newest
 
-        Returns None when the backlog is empty.
-        """
-        payload = self._drain_raw_collection()
-        if payload is None:
-            return None
+    def _raw_collection_snapshot(self, payload: bytes) -> RawCollectionSnapshot:
         wire_obs = unpack_observation(payload)
 
         def decode_raw(wire_obs: WireObservation = wire_obs) -> CollectionRawBatch:
@@ -629,6 +638,20 @@ class _ObservationReader:
             return batch
 
         return RawCollectionSnapshot(timestamp=wire_obs.t, decode_raw=decode_raw)
+
+    def acquire_collection_raw(self) -> RawCollectionSnapshot | None:
+        """Capture the oldest raw collection payload, preserving FIFO order."""
+        payload = self._drain_raw_collection()
+        if payload is None:
+            return None
+        return self._raw_collection_snapshot(payload)
+
+    def acquire_latest_collection_raw(self) -> RawCollectionSnapshot | None:
+        """Capture the newest raw payload and discard stale queued observations."""
+        payload = self._drain_latest_raw_collection()
+        if payload is None:
+            return None
+        return self._raw_collection_snapshot(payload)
 
     def close(self) -> None:
         """Close this reader's SUB socket (idempotent)."""
@@ -746,6 +769,10 @@ class ZmqTransport(TransportBridge):
     def acquire_collection_raw(self) -> RawCollectionSnapshot | None:
         """Deferred-decode collection snapshot from the dedicated collection reader."""
         return self._collection_reader.acquire_collection_raw()
+
+    def acquire_latest_collection_raw(self) -> RawCollectionSnapshot | None:
+        """Newest deferred-decode snapshot from the dedicated collection reader."""
+        return self._collection_reader.acquire_latest_collection_raw()
 
     def get_latest_qpos(self) -> np.ndarray | None:
         """Latest joint state [qpos_dim] float32 from the dedicated qpos reader."""

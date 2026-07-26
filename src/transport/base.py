@@ -167,6 +167,10 @@ class TransportBridge(abc.ABC):
         """
         return None
 
+    def acquire_latest_collection_raw(self) -> RawCollectionSnapshot | None:
+        """Capture the newest raw frame, falling back to the transport's normal capture."""
+        return self.acquire_collection_raw()
+
     def collection_diagnostics(self) -> str:
         """Human-readable reason collection frames are not currently available."""
         return ""

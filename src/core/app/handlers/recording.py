@@ -23,7 +23,7 @@ from core.app.state import (
 from core.config import ConfigDict
 from core.recorder.episode import EpisodeLogger, sanitize_path_component
 from core.recorder.lerobot_meta import history_row
-from core.types import Observation, RolloutInterventionSegment
+from core.types import Observation, RawCollectionSnapshot, RolloutInterventionSegment
 
 logger = logging.getLogger(__name__)
 
@@ -786,23 +786,38 @@ def _active_loggers(runtime: RuntimeState) -> list:
     ]
 
 
+def capture_action_observation(
+    runtime: RuntimeState,
+) -> tuple[bool, RawCollectionSnapshot | None, np.ndarray | None]:
+    """Capture the freshest observation for an active eval/rollout recorder."""
+    active = any(
+        getattr(logger_obj, "has_active_episode", True)
+        for logger_obj in _active_loggers(runtime)
+    )
+    if not active:
+        return False, None, None
+    snapshot = runtime.transport.acquire_latest_collection_raw()
+    if snapshot is None:
+        return True, None, None
+    state_qpos = runtime.transport.get_latest_qpos()
+    return True, snapshot, state_qpos
+
+
 def record_executed_action(
     config: ConfigDict,
     session: SessionState,
     action: np.ndarray,
     runtime: RuntimeState | None = None,
+    snapshot: RawCollectionSnapshot | None = None,
+    state_qpos: np.ndarray | None = None,
 ) -> None:
-    """Capture one raw eval/rollout sample paired with the executed action."""
+    """Store one pre-action eval/rollout observation with the executed action."""
     _ = config, session
-    if runtime is None:
+    if runtime is None or snapshot is None:
         return
     loggers = _active_loggers(runtime)
     if not loggers:
         return
-    snapshot = runtime.transport.acquire_collection_raw()
-    if snapshot is None:
-        return
-    state_qpos = runtime.transport.get_latest_qpos()
     for logger_obj in loggers:
         logger_obj.ingest_raw_episode_snapshot(snapshot, action, state_qpos)
 
@@ -840,5 +855,6 @@ __all__ = [
     "collect_stop",
     "collect_cancel",
     "_active_loggers",
+    "capture_action_observation",
     "record_executed_action",
 ]
