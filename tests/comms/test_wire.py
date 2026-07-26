@@ -148,6 +148,11 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
         "left_arm": np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.0], dtype=np.float32),
         "right_arm": np.array([-0.1, -0.2, 0.0, 0.0, 0.0, 0.0, 1.0], dtype=np.float32),
     }
+    success_details = {
+        "xy_distance_m": 0.02,
+        "inside_plate": True,
+        "stable_steps": 10,
+    }
     obs = WireObservation(
         t=123.456,
         images=images,
@@ -155,6 +160,7 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
         camera_resolution=(224, 224),
         frame_id=42,
         success=True,
+        success_details=success_details,
         scene_index=3,
         seed=7,
         task_name="pick_and_place",
@@ -174,6 +180,7 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
     assert back.t == 123.456
     assert back.frame_id == 42
     assert back.success is True
+    assert back.success_details == success_details
     assert back.scene_index == 3
     assert back.seed == 7
     assert back.task_name == "pick_and_place"
@@ -210,6 +217,27 @@ def test_observation_roundtrip_preserves_collection_fields():
     np.testing.assert_allclose(back.eef["left_arm"], np.ones(8) * 2)
     np.testing.assert_allclose(back.action, np.ones(7) * 5)
     np.testing.assert_allclose(back.action_eef, np.ones(8) * 6)
+
+
+def test_observation_reader_reports_success_details():
+    success_details = {
+        "xy_distance_m": 0.02,
+        "inside_plate": True,
+        "stable_steps": 10,
+    }
+    reader = object.__new__(_ObservationReader)
+    reader._drain_latest = lambda: WireObservation(
+        t=3.0,
+        images={},
+        state={},
+        success=True,
+        success_details=success_details,
+    )
+
+    status = reader.get_task_status()
+
+    assert status["success"] is True
+    assert status["success_details"] == success_details
 
 
 def test_wire_observation_converts_to_collection_frame_by_robot_group_order():
