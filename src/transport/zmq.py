@@ -47,6 +47,7 @@ RESET_TARGET = "reset"
 RENDER_TARGET = "render"
 LOCKSTEP_TARGET = "lockstep"
 LOCKSTEP_RETRY_INTERVAL_S = 0.1
+RENDER_RETRY_INTERVAL_S = 5.0
 
 
 # --- wire protocol -------------------------------------------------------------
@@ -819,13 +820,25 @@ class ZmqTransport(TransportBridge):
         self._reader.get_frame()
         revision = self._reader.image_revision()
         self._request_render()
+        request_count = 1
         deadline = time.monotonic() + self._render_timeout_s
+        next_request = time.monotonic() + RENDER_RETRY_INTERVAL_S
         while time.monotonic() < deadline and not self._closed:
             frame = self._reader.get_frame(image_after_revision=revision)
             if frame is not None and frame.images:
                 return frame
+            now = time.monotonic()
+            if now >= next_request:
+                self._request_render()
+                request_count += 1
+                next_request = now + RENDER_RETRY_INTERVAL_S
             time.sleep(0.002)
-        logger.warning("Timed out waiting for an on-demand render")
+        logger.warning(
+            "Timed out waiting for an on-demand render after %.1fs requests=%d initial_revision=%d",
+            self._render_timeout_s,
+            request_count,
+            revision,
+        )
         return None
 
     def supports_collection(self) -> bool:

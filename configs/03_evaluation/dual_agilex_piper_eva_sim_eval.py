@@ -4,6 +4,7 @@ _base_ = ["../01_deploy/dual_agilex_piper/eva_sim_openpi_qpos_zmq.py"]
 
 transport = dict(
     render_on_demand=True,
+    render_timeout_s=60.0,
     record_images=False,
 )
 
