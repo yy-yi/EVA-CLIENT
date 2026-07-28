@@ -1,6 +1,6 @@
 """Dual Piper: automated EVA-VLA evaluation through EVA Client and EVA Sim."""
 
-_base_ = ["../01_deploy/dual_agilex_piper/eva_sim_openpi_qpos_zmq.py"]
+_base_ = ["../01_deploy/dual_agilex_piper/eva_sim_openpi_qpos_zmq_eval.py"]
 
 transport = dict(
     render_on_demand=True,
@@ -20,7 +20,7 @@ eval_cfg = dict(
     checkpoints=[
         dict(
             name="eva_vla_replay",
-            config="../01_deploy/dual_agilex_piper/eva_sim_openpi_qpos_zmq.py",
+            config="../01_deploy/dual_agilex_piper/eva_sim_openpi_qpos_zmq_eval.py",
             port=9000,
         ),
     ],
