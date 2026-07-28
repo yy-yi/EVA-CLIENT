@@ -258,6 +258,7 @@ class _ObservationReader:
         zmq_mod,
         preserve_collection_backlog: bool = False,
         record_images: bool = True,
+        conflate: bool = True,
     ) -> None:
         self._robot = robot
         self._zmq = zmq_mod
@@ -288,7 +289,7 @@ class _ObservationReader:
 
         ctx = zmq_mod.Context.instance()
         self._sub = ctx.socket(zmq_mod.SUB)
-        if not preserve_collection_backlog:
+        if conflate and not preserve_collection_backlog:
             self._sub.setsockopt(zmq_mod.CONFLATE, 1)
         self._sub.setsockopt(zmq_mod.SUBSCRIBE, b"")
         self._sub.setsockopt(zmq_mod.RCVTIMEO, 0)  # non-blocking drain
@@ -702,7 +703,13 @@ class ZmqTransport(TransportBridge):
         self._render_requests: queue.Queue[bool | None] | None = None
         self._render_thread: threading.Thread | None = None
 
-        self._reader = _ObservationReader(config, robot, zmq)
+        # Later state-only updates must not overwrite an on-demand image in the socket.
+        self._reader = _ObservationReader(
+            config,
+            robot,
+            zmq,
+            conflate=not self._render_on_demand,
+        )
         self._collection_reader = _ObservationReader(
             config,
             robot,
