@@ -2,6 +2,11 @@
 
 _base_ = ["eva_sim_openpi_qpos_zmq.py"]
 
+transport = dict(
+    image_height=480,
+    image_width=640,
+)
+
 inference_strategies = dict(
     sync=dict(
         args=dict(
