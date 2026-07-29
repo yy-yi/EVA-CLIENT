@@ -1,4 +1,4 @@
-"""Dual Piper: lockstep EVA Sim evaluation with synchronous inference."""
+"""Dual Piper: EVA Sim evaluation strategy overrides."""
 
 _base_ = ["eva_sim_openpi_qpos_zmq.py"]
 
