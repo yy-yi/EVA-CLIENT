@@ -170,6 +170,8 @@ class RuntimeState:
             identity.
         needs_pre_start_reset: True after a stop/ckpt-switch that left the robot un-reset.
             The next start auto-resets.
+        sim_episode_requires_reset: True after a simulator-clocked episode terminates.
+            Only a successful environment advance clears it.
         ckpt_order: blind multi-ckpt — ckpt_order[slot] -> index into
             config.eval.checkpoints.
         active_ckpt_slot: operator-facing checkpoint slot (0->Model A, 1->Model B, ...).
@@ -235,6 +237,7 @@ class RuntimeState:
     current_clip_id: str | None = None
     current_cell: dict[str, object] | None = None
     needs_pre_start_reset: bool = False
+    sim_episode_requires_reset: bool = False
     ckpt_order: list[int] = dataclasses.field(default_factory=list)
     active_ckpt_slot: int | None = None
     eval_output_dir: str = ""

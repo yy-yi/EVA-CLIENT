@@ -10,7 +10,12 @@ from typing import Any
 
 import numpy as np
 
-from core.app.collection_capture import start_collection_capture, stop_collection_capture
+from core.app.collection_capture import (
+    start_collection_capture,
+    start_sim_tick_capture,
+    stop_collection_capture,
+    stop_sim_tick_capture,
+)
 from core.app.handlers.imaging import prepare_image
 from core.app.handlers.utils import _resolve_runtime_path
 from core.app.state import (
@@ -447,6 +452,31 @@ def end_episode(runtime: RuntimeState) -> None:
         runtime.episode_logger.end_episode()
 
 
+def start_sim_episode_capture(config: ConfigDict, runtime: RuntimeState) -> None:
+    """Start consuming simulator-owned state/action ticks for active episode loggers."""
+    loggers = [
+        logger_obj
+        for logger_obj in (runtime.episode_logger, runtime.rollout_episode_logger)
+        if logger_obj is not None and logger_obj.has_active_episode
+    ]
+    if not loggers:
+        return
+    runtime.transport.clear_collection_backlog()
+    start_sim_tick_capture(
+        runtime,
+        fps=config.inference_cfg.publish_rate,
+        max_raw_snapshots_per_tick=COLLECT_STEP_MAX_RAW_SNAPSHOTS,
+    )
+
+
+def stop_sim_episode_capture(runtime: RuntimeState) -> None:
+    """Freeze EVA Sim and drain all recordable ticks before closing the episode."""
+    final_source_frame_id = runtime.transport.stop_sim_episode()
+    if final_source_frame_id is None:
+        raise RuntimeError("simulator transport did not return a stop frame")
+    stop_sim_tick_capture(runtime, final_source_frame_id)
+
+
 def start_rollout_intervention(
     config: ConfigDict, runtime: RuntimeState, session: SessionState
 ) -> bool:
@@ -846,6 +876,8 @@ __all__ = [
     "rebuild_eval_episode_logger",
     "start_episode",
     "end_episode",
+    "start_sim_episode_capture",
+    "stop_sim_episode_capture",
     "start_rollout_intervention",
     "stop_rollout_intervention",
     "record_rollout_intervention_step",

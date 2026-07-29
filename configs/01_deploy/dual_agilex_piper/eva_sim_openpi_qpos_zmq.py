@@ -7,7 +7,7 @@ transport = dict(
     resize_pad=False,
     image_layout="hwc",
     convert_bgr_to_rgb=False,
-    action_observation_lockstep=True,
+    simulator=True,
     topics={},
     ssh=dict(host="", user="", port=0),
 )

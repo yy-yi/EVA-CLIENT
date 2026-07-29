@@ -45,9 +45,9 @@ COLLECTION_CONTROL_INTERVAL_S = 0.02
 COLLECTION_SOCKET_DRAIN_MAX = 64
 RESET_TARGET = "reset"
 RENDER_TARGET = "render"
-LOCKSTEP_TARGET = "lockstep"
-LOCKSTEP_RETRY_INTERVAL_S = 0.1
+EPISODE_STOP_TARGET = "episode_stop"
 RENDER_RETRY_INTERVAL_S = 5.0
+SIM_STOP_RETRY_INTERVAL_S = 0.05
 
 
 # --- wire protocol -------------------------------------------------------------
@@ -76,8 +76,9 @@ class WireObservation:
         scene_state: optional concrete assets and initial scene poses for offline rebuild.
         camera_resolution: Optional intended camera size as (height, width).
         prompt: Optional natural-language instruction for the simulator scene.
-        applied_action_id: Optional identifier of the latest action applied by a simulator.
-        lockstep: Whether the publisher has entered action-observation lockstep mode.
+        recordable: Whether this observation is one executed control tick.
+        episode_active: Whether the simulator is currently advancing its control clock.
+        stop_reason: Optional simulator-owned terminal reason for the episode.
     """
 
     t: float
@@ -97,8 +98,9 @@ class WireObservation:
     scene_state: dict[str, object] | None = None
     camera_resolution: tuple[int, int] | None = None
     prompt: str | None = None
-    applied_action_id: int | None = None
-    lockstep: bool = False
+    recordable: bool = True
+    episode_active: bool = False
+    stop_reason: str | None = None
 
 
 @dataclasses.dataclass
@@ -109,13 +111,11 @@ class WireAction:
         t: client-side send timestamp in seconds.
         action: flat action vector (joint space, full robot DOF).
         target: "real", "sim", "collect_start", or "collect_stop".
-        action_id: Optional monotonic identifier used by lockstep simulators.
     """
 
     t: float
     action: np.ndarray
     target: str = "real"
-    action_id: int | None = None
 
 
 def pack_observation(obs: WireObservation) -> bytes:
@@ -163,10 +163,10 @@ def pack_observation(obs: WireObservation) -> bytes:
         payload["camera_resolution"] = list(obs.camera_resolution)
     if obs.prompt is not None:
         payload["prompt"] = str(obs.prompt)
-    if obs.applied_action_id is not None:
-        payload["applied_action_id"] = int(obs.applied_action_id)
-    if obs.lockstep:
-        payload["lockstep"] = True
+    payload["recordable"] = bool(obs.recordable)
+    payload["episode_active"] = bool(obs.episode_active)
+    if obs.stop_reason is not None:
+        payload["stop_reason"] = str(obs.stop_reason)
     return _PACKER.pack(payload)
 
 
@@ -208,10 +208,9 @@ def unpack_observation(payload: bytes) -> WireObservation:
             else (int(raw["camera_resolution"][0]), int(raw["camera_resolution"][1]))
         ),
         prompt=None if "prompt" not in raw else str(raw["prompt"]),
-        applied_action_id=(
-            None if "applied_action_id" not in raw else int(raw["applied_action_id"])
-        ),
-        lockstep=bool(raw.get("lockstep", False)),
+        recordable=bool(raw.get("recordable", True)),
+        episode_active=bool(raw.get("episode_active", False)),
+        stop_reason=None if "stop_reason" not in raw else str(raw["stop_reason"]),
     )
 
 
@@ -222,8 +221,6 @@ def pack_action(action: WireAction) -> bytes:
         "action": np.asarray(action.action, dtype=np.float32),
         "target": action.target,
     }
-    if action.action_id is not None:
-        payload["action_id"] = int(action.action_id)
     return _PACKER.pack(payload)
 
 
@@ -234,7 +231,6 @@ def unpack_action(payload: bytes) -> WireAction:
         t=float(raw["t"]),
         action=np.asarray(raw["action"], dtype=np.float32),
         target=str(raw.get("target", "real")),
-        action_id=None if "action_id" not in raw else int(raw["action_id"]),
     )
 
 
@@ -266,6 +262,7 @@ class _ObservationReader:
         self._latest_image_observation: WireObservation | None = None
         self._latest_images: dict[str, np.ndarray] = {}
         self._image_revision = 0
+        self._observation_revision = 0
         self._preserve_collection_backlog = preserve_collection_backlog
         self._record_images = record_images
         self._collection_queue: collections.deque[WireObservation] = collections.deque()
@@ -291,6 +288,8 @@ class _ObservationReader:
         self._sub = ctx.socket(zmq_mod.SUB)
         if conflate and not preserve_collection_backlog:
             self._sub.setsockopt(zmq_mod.CONFLATE, 1)
+        if preserve_collection_backlog:
+            self._sub.setsockopt(zmq_mod.RCVHWM, 1024)
         self._sub.setsockopt(zmq_mod.SUBSCRIBE, b"")
         self._sub.setsockopt(zmq_mod.RCVTIMEO, 0)  # non-blocking drain
         self._sub.connect(config.transport.sub_endpoint)
@@ -320,6 +319,7 @@ class _ObservationReader:
                 got_message = True
                 obs = unpack_observation(payload)
                 self._track_images_locked(obs)
+                self._observation_revision += 1
                 # Simulator time resets when the publisher restarts; receive order is authoritative.
                 newest = obs
             if got_message:
@@ -471,10 +471,9 @@ class _ObservationReader:
             "split": None if wire_obs is None else wire_obs.split,
             "scene_state": None if wire_obs is None else wire_obs.scene_state,
             "prompt": None if wire_obs is None else wire_obs.prompt,
-            "applied_action_id": (
-                None if wire_obs is None else wire_obs.applied_action_id
-            ),
-            "lockstep": False if wire_obs is None else wire_obs.lockstep,
+            "episode_active": False if wire_obs is None else wire_obs.episode_active,
+            "stop_reason": None if wire_obs is None else wire_obs.stop_reason,
+            "revision": self._observation_revision,
         }
 
     def get_camera_frame(self, key: str) -> np.ndarray | None:
@@ -652,14 +651,21 @@ class _ObservationReader:
                 )
             return batch
 
-        return RawCollectionSnapshot(timestamp=wire_obs.t, decode_raw=decode_raw)
+        return RawCollectionSnapshot(
+            timestamp=wire_obs.t,
+            decode_raw=decode_raw,
+            source_frame_id=wire_obs.frame_id,
+        )
 
     def acquire_collection_raw(self) -> RawCollectionSnapshot | None:
         """Capture the oldest raw collection payload, preserving FIFO order."""
-        payload = self._drain_raw_collection()
-        if payload is None:
-            return None
-        return self._raw_collection_snapshot(payload)
+        while True:
+            payload = self._drain_raw_collection()
+            if payload is None:
+                return None
+            wire_obs = unpack_observation(payload)
+            if wire_obs.recordable:
+                return self._raw_collection_snapshot(payload)
 
     def close(self) -> None:
         """Close this reader's SUB socket (idempotent)."""
@@ -693,13 +699,8 @@ class ZmqTransport(TransportBridge):
         self._zmq = zmq
         self._render_on_demand = bool(config.transport.render_on_demand)
         self._render_timeout_s = float(config.transport.render_timeout_s)
-        self._action_observation_lockstep = bool(
-            config.transport.action_observation_lockstep
-        )
-        self._lockstep_timeout_s = float(config.transport.lockstep_timeout_s)
-        self._lockstep_action_id = 0
-        self._lockstep_lock = threading.Lock()
-        self._pending_action_observation: RawCollectionSnapshot | None = None
+        self._simulator = bool(config.transport.simulator)
+        self._action_observation_lock = threading.Lock()
         self._render_requests: queue.Queue[bool | None] | None = None
         self._render_thread: threading.Thread | None = None
 
@@ -719,11 +720,6 @@ class ZmqTransport(TransportBridge):
         )
         self._qpos_reader = _ObservationReader(config, robot, zmq)
         self._action_observation_reader: _ObservationReader | None = None
-        self._lockstep_reader = (
-            _ObservationReader(config, robot, zmq)
-            if self._action_observation_lockstep
-            else None
-        )
         self._extra_readers: list[_ObservationReader] = []
 
         ctx = zmq.Context.instance()
@@ -769,14 +765,6 @@ class ZmqTransport(TransportBridge):
         except queue.Full:
             pass
 
-    def _send_lockstep_signal(self) -> None:
-        action = np.zeros(self._robot.total_action_dim, dtype=np.float32)
-        self._pub.send(
-            pack_action(
-                WireAction(t=time.monotonic(), action=action, target=LOCKSTEP_TARGET)
-            )
-        )
-
     def _ensure_action_observation_reader_locked(self) -> _ObservationReader:
         if self._action_observation_reader is None:
             self._action_observation_reader = _ObservationReader(
@@ -787,41 +775,8 @@ class ZmqTransport(TransportBridge):
             )
         return self._action_observation_reader
 
-    def _ensure_lockstep_ready_locked(self) -> None:
-        assert self._lockstep_reader is not None
-        deadline = time.monotonic() + self._lockstep_timeout_s
-        next_request = 0.0
-        while time.monotonic() < deadline and not self._closed:
-            status = self._lockstep_reader.get_task_status()
-            if status["lockstep"]:
-                return
-            now = time.monotonic()
-            if now >= next_request:
-                self._send_lockstep_signal()
-                next_request = now + LOCKSTEP_RETRY_INTERVAL_S
-            time.sleep(0.002)
-        raise TimeoutError("Timed out enabling EVA-SIM action-observation lockstep")
-
-    def _request_current_observation_locked(self) -> RawCollectionSnapshot:
-        reader = self._ensure_action_observation_reader_locked()
-        deadline = time.monotonic() + self._lockstep_timeout_s
-        next_request = 0.0
-        while time.monotonic() < deadline and not self._closed:
-            snapshot = reader.acquire_collection_raw()
-            if snapshot is not None:
-                return snapshot
-            now = time.monotonic()
-            if now >= next_request:
-                self._send_lockstep_signal()
-                next_request = now + LOCKSTEP_RETRY_INTERVAL_S
-            time.sleep(0.002)
-        raise TimeoutError("Timed out waiting for the current EVA-SIM observation")
-
     def get_frame(self) -> Observation | None:
         """Return a fresh policy observation, requesting images when configured."""
-        if self._action_observation_lockstep:
-            with self._lockstep_lock:
-                self._ensure_lockstep_ready_locked()
         if not self._render_on_demand:
             return self._reader.get_frame()
         self._reader.get_frame()
@@ -854,7 +809,7 @@ class ZmqTransport(TransportBridge):
 
     def prepare_action_observation_capture(self) -> None:
         """Create the dedicated recorder reader only when action recording is used."""
-        with self._lockstep_lock:
+        with self._action_observation_lock:
             self._ensure_action_observation_reader_locked()
 
     def get_collection_frame(self) -> Observation | None:
@@ -867,17 +822,9 @@ class ZmqTransport(TransportBridge):
 
     def acquire_latest_collection_raw(self) -> RawCollectionSnapshot | None:
         """Newest pre-action snapshot from a dedicated conflating reader."""
-        with self._lockstep_lock:
+        with self._action_observation_lock:
             reader = self._ensure_action_observation_reader_locked()
-            if self._pending_action_observation is not None:
-                snapshot = self._pending_action_observation
-                self._pending_action_observation = None
-                return snapshot
-            snapshot = reader.acquire_collection_raw()
-            if snapshot is not None or not self._action_observation_lockstep:
-                return snapshot
-            self._ensure_lockstep_ready_locked()
-            return self._request_current_observation_locked()
+            return reader.acquire_collection_raw()
 
     def get_latest_qpos(self) -> np.ndarray | None:
         """Latest joint state [qpos_dim] float32 from the dedicated qpos reader."""
@@ -890,9 +837,7 @@ class ZmqTransport(TransportBridge):
     def seconds_since_last_recv(self) -> float | None:
         """Freshest receipt age across all readers, or None if none have received."""
         optional_readers = (
-            reader
-            for reader in (self._action_observation_reader, self._lockstep_reader)
-            if reader is not None
+            reader for reader in (self._action_observation_reader,) if reader is not None
         )
         ages = [
             reader.seconds_since_last_recv()
@@ -910,9 +855,7 @@ class ZmqTransport(TransportBridge):
     def image_min_hz(self) -> float | None:
         """Minimum known image receive rate across all active readers."""
         optional_readers = (
-            reader
-            for reader in (self._action_observation_reader, self._lockstep_reader)
-            if reader is not None
+            reader for reader in (self._action_observation_reader,) if reader is not None
         )
         rates = [
             reader.image_min_hz()
@@ -937,50 +880,18 @@ class ZmqTransport(TransportBridge):
         # The sole downstream channel executes every frame it receives; with no
         # separate sim surface a "sim" preview frame would drive the robot. The
         # console 3D canvas renders previews from local state, not the wire.
-        if (
-            target == "sim"
-            and not self.has_sim_publishers()
-            and not self._action_observation_lockstep
-        ):
+        if target == "sim" and not self.has_sim_publishers():
             return
-        if not self._action_observation_lockstep:
-            message = WireAction(t=time.monotonic(), action=np.asarray(action), target=target)
-            self._pub.send(pack_action(message))
-            return
+        message = WireAction(t=time.monotonic(), action=np.asarray(action), target=target)
+        self._pub.send(pack_action(message))
 
-        with self._lockstep_lock:
-            self._ensure_lockstep_ready_locked()
-            assert self._lockstep_reader is not None
-            action_id = self._lockstep_action_id
-            message = WireAction(
-                t=time.monotonic(),
-                action=np.asarray(action),
-                target=target,
-                action_id=action_id,
-            )
-            payload = pack_action(message)
-            deadline = time.monotonic() + self._lockstep_timeout_s
-            next_send = 0.0
-            while time.monotonic() < deadline and not self._closed:
-                status = self._lockstep_reader.get_task_status()
-                applied_action_id = cast(int | None, status["applied_action_id"])
-                if status["lockstep"] and applied_action_id == action_id:
-                    self._lockstep_action_id += 1
-                    return
-                if applied_action_id is not None and applied_action_id > action_id:
-                    raise RuntimeError(
-                        "EVA-SIM acknowledged an action newer than the pending action"
-                    )
-                now = time.monotonic()
-                if now >= next_send:
-                    self._pub.send(payload)
-                    next_send = now + LOCKSTEP_RETRY_INTERVAL_S
-                time.sleep(0.002)
-            raise TimeoutError(f"Timed out waiting for EVA-SIM action {action_id}")
+    def has_sim_publishers(self) -> bool:
+        """Whether this ZMQ endpoint is an EVA Sim execution node."""
+        return self._simulator
 
-    def requires_fresh_observation_for_action(self) -> bool:
-        """Require pre-action recorder input only for explicit simulator lockstep."""
-        return self._action_observation_lockstep
+    def uses_simulator_clock(self) -> bool:
+        """Whether this transport receives canonical control ticks from EVA Sim."""
+        return self._simulator
 
     def _send_collection_control(self, target: str) -> None:
         action = np.zeros(self._robot.total_action_dim, dtype=np.float32)
@@ -997,20 +908,47 @@ class ZmqTransport(TransportBridge):
 
     def clear_collection_backlog(self) -> float | None:
         """Drop collection frames buffered before the active recording episode."""
-        cutoff = self._collection_reader.clear_collection_backlog()
-        if self._action_observation_lockstep:
-            with self._lockstep_lock:
-                self._ensure_lockstep_ready_locked()
-                reader = self._ensure_action_observation_reader_locked()
-                reader.clear_collection_backlog()
-                self._pending_action_observation = (
-                    self._request_current_observation_locked()
-                )
-        return cutoff
+        return self._collection_reader.clear_collection_backlog()
 
     def stop_collection(self) -> None:
         """Tell the execution layer to stop recording (sends repeated stop signals)."""
         self._send_collection_control(COLLECTION_STOP_TARGET)
+
+    def stop_sim_episode(self) -> int | None:
+        """Freeze EVA Sim and return the first non-recordable frame id."""
+        if not self._simulator:
+            return None
+        latest = self._qpos_reader.get_task_status()
+        baseline_revision = cast(int, latest["revision"])
+        deadline = time.monotonic() + max(self._render_timeout_s, 5.0) + 5.0
+        next_send = 0.0
+        while time.monotonic() < deadline and not self._closed:
+            now = time.monotonic()
+            if now >= next_send:
+                action = np.zeros(self._robot.total_action_dim, dtype=np.float32)
+                self._pub.send(
+                    pack_action(
+                        WireAction(
+                            t=now,
+                            action=action,
+                            target=EPISODE_STOP_TARGET,
+                        )
+                    )
+                )
+                next_send = now + SIM_STOP_RETRY_INTERVAL_S
+            latest = self._qpos_reader.get_task_status()
+            revision = cast(int, latest["revision"])
+            frame_id = cast(int | None, latest.get("frame_id"))
+            stop_reason = latest.get("stop_reason")
+            if (
+                revision > baseline_revision
+                and frame_id is not None
+                and not bool(latest.get("episode_active"))
+                and stop_reason is not None
+            ):
+                return frame_id
+            time.sleep(0.002)
+        raise TimeoutError(f"Timed out waiting for EVA Sim to stop: {latest}")
 
     def advance_environment(self) -> bool:
         """Tell EVA Sim to advance to its next scene/layout trial."""
@@ -1039,8 +977,6 @@ class ZmqTransport(TransportBridge):
         self._qpos_reader.close()
         if self._action_observation_reader is not None:
             self._action_observation_reader.close()
-        if self._lockstep_reader is not None:
-            self._lockstep_reader.close()
         for reader in self._extra_readers:
             reader.close()
         self._pub.close(linger=0)

@@ -1006,6 +1006,7 @@ def test_halt_keeps_active_episode_open_for_continue():
         web_phase="idle",
         replay_source=None,
         infer_strategy=None,
+        transport=SimpleNamespace(uses_simulator_clock=lambda: False),
         episode_logger=logger_obj,
         rollout_episode_logger=None,
     )
@@ -1023,11 +1024,55 @@ def test_halt_keeps_active_episode_open_for_continue():
     assert logger_obj.ended == 0
 
 
+def test_simulator_clock_episode_cannot_resume_after_halt():
+    runtime = SimpleNamespace(
+        web_phase="idle",
+        collection_replay_qpos=None,
+        collection_replay_episode=None,
+        rollout_intervention_active=False,
+        sim_episode_requires_reset=True,
+        transport=SimpleNamespace(uses_simulator_clock=lambda: True),
+    )
+    session = SessionState(
+        mode=SessionMode.SIM,
+        status=SessionStatus.READY,
+        is_setup_done=True,
+        selected_task="pick up the cup",
+        step_index=5,
+    )
+
+    app.handle_command("web:run", ConfigDict(), cast(RuntimeState, runtime), session)
+
+    assert session.status is SessionStatus.READY
+    assert session.last_error == (
+        "Simulator episode has stopped; start the next trial before running again"
+    )
+
+
+def test_simulator_halt_requires_environment_advance_before_next_run():
+    runtime = SimpleNamespace(
+        infer_strategy=None,
+        collection_capture_runner=None,
+        sim_episode_requires_reset=False,
+        transport=SimpleNamespace(
+            uses_simulator_clock=lambda: True,
+            stop_sim_episode=lambda: 0,
+        ),
+    )
+    session = SessionState(mode=SessionMode.SIM, status=SessionStatus.RUNNING)
+
+    app._dispatch_halt(ConfigDict(), cast(RuntimeState, runtime), session)
+
+    assert session.status is SessionStatus.READY
+    assert runtime.sim_episode_requires_reset is True
+
+
 def test_run_clears_collection_replay_preview():
     runtime = SimpleNamespace(
         web_phase="idle",
         replay_source=None,
         infer_strategy=None,
+        transport=SimpleNamespace(uses_simulator_clock=lambda: False),
         collection_replay_qpos=np.zeros((2, 14), dtype=float),
         collection_replay_episode=1,
     )
@@ -1238,6 +1283,7 @@ def test_eval_next_trial_advances_transport_and_resets_run_state():
         policy=None,
         ik_solver=None,
         needs_pre_start_reset=False,
+        sim_episode_requires_reset=True,
         current_clip_id="clip-1",
         current_cell={"prompt": "pick up the cup", "trial": 1},
     )
@@ -1259,6 +1305,7 @@ def test_eval_next_trial_advances_transport_and_resets_run_state():
     assert advances == [True]
     assert runtime.web_phase == "ready"
     assert runtime.needs_pre_start_reset is True
+    assert runtime.sim_episode_requires_reset is False
     assert runtime.current_clip_id is None
     assert runtime.current_cell is None
     assert session.status is SessionStatus.UNSET

@@ -29,7 +29,7 @@ from transport.zmq import (
 )
 
 
-def _build_zmq_transport_with_fake_readers(monkeypatch, lockstep: bool = False):
+def _build_zmq_transport_with_fake_readers(monkeypatch, simulator: bool = False):
     readers = []
 
     class _Reader:
@@ -40,6 +40,7 @@ def _build_zmq_transport_with_fake_readers(monkeypatch, lockstep: bool = False):
             _zmq_mod,
             preserve_collection_backlog=False,
             record_images=True,
+            conflate=True,
         ) -> None:
             self.preserve_collection_backlog = preserve_collection_backlog
             self.record_images = record_images
@@ -48,7 +49,8 @@ def _build_zmq_transport_with_fake_readers(monkeypatch, lockstep: bool = False):
             self.qpos = None
             self.raw_snapshot = None
             self.statuses = collections.deque()
-            self.status = {"lockstep": False, "applied_action_id": None}
+            self.status = {"episode_active": False, "stop_reason": None}
+            self.revision = 0
             self.age = None
             self.calls = []
             self.closed = False
@@ -81,7 +83,8 @@ def _build_zmq_transport_with_fake_readers(monkeypatch, lockstep: bool = False):
             self.calls.append("status")
             if self.statuses:
                 self.status = self.statuses.popleft()
-            return self.status
+                self.revision += 1
+            return {**self.status, "revision": self.revision}
 
         def seconds_since_last_recv(self):
             return self.age
@@ -126,8 +129,7 @@ def _build_zmq_transport_with_fake_readers(monkeypatch, lockstep: bool = False):
             pub_endpoint="tcp://127.0.0.1:5556",
             render_on_demand=False,
             render_timeout_s=5.0,
-            action_observation_lockstep=lockstep,
-            lockstep_timeout_s=1.0,
+            simulator=simulator,
             record_images=True,
         )
     )
@@ -167,8 +169,9 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
         robot_name="piper",
         split="train",
         prompt="pick up the banana",
-        applied_action_id=17,
-        lockstep=True,
+        recordable=False,
+        episode_active=False,
+        stop_reason="success",
         scene_state={
             "objects": [{"asset_id": "banana", "position": [0.0, 0.1, 0.2]}],
             "robot_base": {"left_arm": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]},
@@ -187,8 +190,9 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
     assert back.robot_name == "piper"
     assert back.split == "train"
     assert back.prompt == "pick up the banana"
-    assert back.applied_action_id == 17
-    assert back.lockstep
+    assert not back.recordable
+    assert not back.episode_active
+    assert back.stop_reason == "success"
     assert back.scene_state == obs.scene_state
     assert back.camera_resolution == (224, 224)
     assert set(back.images) == set(images)
@@ -226,6 +230,7 @@ def test_observation_reader_reports_success_details():
         "stable_steps": 10,
     }
     reader = object.__new__(_ObservationReader)
+    reader._observation_revision = 0
     reader._drain_latest = lambda: WireObservation(
         t=3.0,
         images={},
@@ -365,6 +370,40 @@ def test_raw_collection_can_discard_policy_images():
     assert batch.image_streams_expected is False
 
 
+def test_raw_collection_skips_nonrecordable_status_and_preserves_frame_id():
+    payloads = collections.deque(
+        [
+            pack_observation(
+                WireObservation(
+                    t=3.0,
+                    images={},
+                    state={},
+                    frame_id=8,
+                    recordable=False,
+                )
+            ),
+            pack_observation(
+                WireObservation(
+                    t=4.0,
+                    images={},
+                    state={},
+                    frame_id=9,
+                    recordable=True,
+                )
+            ),
+        ]
+    )
+    reader = object.__new__(_ObservationReader)
+    reader._record_images = False
+    reader._drain_raw_collection = lambda: payloads.popleft() if payloads else None
+
+    snapshot = reader.acquire_collection_raw()
+
+    assert snapshot is not None
+    assert snapshot.timestamp == 4.0
+    assert snapshot.source_frame_id == 9
+
+
 def test_zmq_collection_reader_preserves_backlog_order():
     robot = ROBOT_REGISTRY.build("agilex_piper")
     payloads = collections.deque(
@@ -400,6 +439,7 @@ def test_zmq_collection_reader_preserves_backlog_order():
     reader._disabled_cameras = set()
     reader._latest_images = {}
     reader._image_revision = 0
+    reader._observation_revision = 0
     reader._image_rate = ImageRateTracker()
     reader._preserve_collection_backlog = True
     reader._collection_queue = collections.deque()
@@ -450,6 +490,7 @@ def test_zmq_collection_reader_defaults_to_latest_frame():
     reader._disabled_cameras = set()
     reader._latest_images = {}
     reader._image_revision = 0
+    reader._observation_revision = 0
     reader._image_rate = ImageRateTracker()
     reader._preserve_collection_backlog = False
     reader._collection_queue = collections.deque()
@@ -651,6 +692,7 @@ def test_zmq_reader_keeps_multi_camera_visualization_cache():
     reader._latest_image_observation = None
     reader._latest_images = {}
     reader._image_revision = 0
+    reader._observation_revision = 0
     reader._image_rate = ImageRateTracker()
     reader._disabled_cameras = set()
     reader._disabled_groups = set()
@@ -672,14 +714,12 @@ def test_action_roundtrip_preserves_vector_target_and_timestamp():
         t=9.0,
         action=np.arange(14, dtype=np.float32),
         target="sim",
-        action_id=23,
     )
 
     back = unpack_action(pack_action(action))
 
     assert back.t == 9.0
     assert back.target == "sim"
-    assert back.action_id == 23
     np.testing.assert_allclose(back.action, np.arange(14))
 
 
@@ -735,7 +775,6 @@ def test_zmq_transport_requests_a_new_image_for_on_demand_frame():
     reader = _Reader()
     render_requests = []
     transport = object.__new__(ZmqTransport)
-    transport._action_observation_lockstep = False
     transport._render_on_demand = True
     transport._render_timeout_s = 1.0
     transport._closed = False
@@ -776,6 +815,7 @@ def test_zmq_reader_conflates_latest_frames_but_preserves_collection_backlog():
         CONFLATE=2,
         SUBSCRIBE=3,
         RCVTIMEO=4,
+        RCVHWM=5,
         Context=types.SimpleNamespace(instance=lambda: context),
     )
     config = types.SimpleNamespace(
@@ -825,6 +865,7 @@ def test_zmq_reader_accepts_new_publisher_after_source_time_resets():
     reader._latest = old_observation
     reader._latest_image_observation = old_observation
     reader._image_revision = 1
+    reader._observation_revision = 1
     reader._sub = _Socket()
     reader._zmq = types.SimpleNamespace(NOBLOCK=object(), Again=_Again)
     reader._image_rate = ImageRateTracker()
@@ -858,28 +899,44 @@ def test_zmq_transport_reports_freshest_reader_and_closes_all_readers(monkeypatc
     assert ctx.sockets[0].closed
 
 
-def test_zmq_lockstep_action_waits_for_matching_ack(monkeypatch):
+def test_zmq_simulator_action_is_published_without_waiting(monkeypatch):
+    transport, readers, ctx = _build_zmq_transport_with_fake_readers(
+        monkeypatch, simulator=True
+    )
+    assert len(readers) == 3
+
+    transport.publish_action(np.arange(14, dtype=np.float32), target="sim")
+
+    assert transport.has_sim_publishers()
+    sent = [unpack_action(payload) for payload in ctx.sockets[0].payloads]
+    assert len(sent) == 1
+    assert sent[0].target == "sim"
+    np.testing.assert_allclose(sent[0].action, np.arange(14))
+
+
+def test_zmq_simulator_stop_waits_for_fresh_terminal_status(monkeypatch):
     monkeypatch.setattr(zmq_transport.time, "sleep", lambda _seconds: None)
     transport, readers, ctx = _build_zmq_transport_with_fake_readers(
-        monkeypatch, lockstep=True
+        monkeypatch, simulator=True
     )
-    assert len(readers) == 4
-    readers[3].statuses.extend(
+    readers[2].status = {
+        "frame_id": 11,
+        "episode_active": False,
+        "stop_reason": "stopped",
+    }
+    readers[2].statuses.extend(
         [
-            {"lockstep": True, "applied_action_id": None},
-            {"lockstep": True, "applied_action_id": None},
-            {"lockstep": True, "applied_action_id": 0},
+            {"frame_id": 11, "episode_active": False, "stop_reason": "stopped"},
+            {"frame_id": 4, "episode_active": True, "stop_reason": None},
+            {"frame_id": 5, "episode_active": False, "stop_reason": "stopped"},
         ]
     )
 
-    transport.publish_action(np.arange(14, dtype=np.float32), target="real")
+    assert transport.stop_sim_episode() == 5
 
-    assert transport._lockstep_action_id == 1
-    assert not transport.has_sim_publishers()
     sent = [unpack_action(payload) for payload in ctx.sockets[0].payloads]
-    assert len(sent) == 1
-    assert sent[0].action_id == 0
-    np.testing.assert_allclose(sent[0].action, np.arange(14))
+    assert sent
+    assert all(message.target == "episode_stop" for message in sent)
 
 
 def test_zmq_transport_sends_collection_control_actions(monkeypatch):

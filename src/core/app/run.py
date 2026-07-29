@@ -65,7 +65,9 @@ from core.app.handlers import (
     start_episode,
     start_inference_loop,
     start_rollout_intervention,
+    start_sim_episode_capture,
     stop_rollout_intervention,
+    stop_sim_episode_capture,
     toggle_gripper_immediate,
     update_inference_params,
 )
@@ -472,6 +474,7 @@ def _handle_web_command(
             session.last_error = "Active transport does not support environment advance"
             set_phase(runtime, "ready")
             return
+        runtime.sim_episode_requires_reset = False
         reset_session_progress(session)
         reset_infer_strategy(runtime)
         reset_ik_solver(config, runtime)
@@ -648,6 +651,15 @@ def _handle_web_command(
     if verb == "run":
         runtime.collection_replay_qpos = None
         runtime.collection_replay_episode = None
+        if (
+            session.mode is SessionMode.SIM
+            and runtime.transport.uses_simulator_clock()
+            and runtime.sim_episode_requires_reset
+        ):
+            session.last_error = (
+                "Simulator episode has stopped; start the next trial before running again"
+            )
+            return
         if getattr(runtime, "rollout_intervention_active", False):
             segment = getattr(runtime, "rollout_intervention_active_segment", None)
             if segment is not None and segment.invalid_reason:
@@ -679,7 +691,7 @@ def _handle_web_command(
                     session.step_index = 0
                 replay.seek(session.step_index)  # type: ignore[attr-defined]
             else:
-                # Async/policy continue: re-anchor the action buffer to the robot's
+                # Async real-robot continue: re-anchor the action buffer to the robot's
                 # current measured pose and restart the inference loop, so resume
                 # blends from where the robot really is instead of dumping the stale
                 # actions queued before the pause (which caused a recoil).
@@ -926,6 +938,15 @@ def _dispatch_run(config: ConfigDict, runtime: RuntimeState, session: SessionSta
         session.last_error = "Setup is required before running the next step"
         return
     if session.mode in (SessionMode.REAL, SessionMode.SIM):
+        if (
+            session.mode is SessionMode.SIM
+            and runtime.transport.uses_simulator_clock()
+            and runtime.sim_episode_requires_reset
+        ):
+            session.last_error = (
+                "Simulator episode has stopped; start the next trial before running again"
+            )
+            return
         if session.status is SessionStatus.UNSET:
             session.last_error = "Setup is required before entering running state"
             return
@@ -940,6 +961,8 @@ def _dispatch_run(config: ConfigDict, runtime: RuntimeState, session: SessionSta
         if not is_replay(runtime):
             start_episode(runtime, session)
             begin_rollout_save_episode(config, runtime, session)
+            if session.mode is SessionMode.SIM and runtime.transport.uses_simulator_clock():
+                start_sim_episode_capture(config, runtime)
         session.run_start_time = time.monotonic()
         set_status(session, SessionStatus.RUNNING, reason="start")
         return
@@ -959,6 +982,9 @@ def _dispatch_halt(config: ConfigDict, runtime: RuntimeState, session: SessionSt
     ):
         if runtime.infer_strategy is not None:
             runtime.infer_strategy.stop_loop()
+        if session.mode is SessionMode.SIM and runtime.transport.uses_simulator_clock():
+            stop_sim_episode_capture(runtime)
+            runtime.sim_episode_requires_reset = True
         set_status(session, SessionStatus.READY, reason="continuous publish cancelled")
     elif session.mode is SessionMode.STEP and session.pending_real_chunk is not None:
         session.pending_real_chunk = None
@@ -1186,6 +1212,18 @@ def run(
             # the model switch". If the session isn't actually running anymore but the phase
             # still says it is, drop it back to ready.
             if runtime.web_phase == "running" and session.status is not SessionStatus.RUNNING:
+                if (
+                    session.mode is SessionMode.SIM
+                    and runtime.transport.uses_simulator_clock()
+                ):
+                    stop_sim_episode_capture(runtime)
+                    runtime.sim_episode_requires_reset = True
+                    for logger_obj in (
+                        runtime.episode_logger,
+                        runtime.rollout_episode_logger,
+                    ):
+                        if logger_obj is not None and logger_obj.has_active_episode:
+                            logger_obj.cancel_episode("simulator run stopped unexpectedly")
                 set_phase(runtime, "ready")
                 runtime.needs_pre_start_reset = True
 
@@ -1196,6 +1234,21 @@ def run(
     finally:
         stop_rollout_intervention(config, runtime, session, required=False)
         discard_rollout_intervention_segment(runtime)
+        if (
+            session.mode is SessionMode.SIM
+            and runtime.transport.uses_simulator_clock()
+            and not transport.is_shutdown()
+        ):
+            try:
+                stop_sim_episode_capture(runtime)
+            except Exception:
+                logger.exception("Failed stopping simulator episode during shutdown")
+                for logger_obj in (
+                    runtime.episode_logger,
+                    runtime.rollout_episode_logger,
+                ):
+                    if logger_obj is not None and logger_obj.has_active_episode:
+                        logger_obj.cancel_episode("simulator stop boundary was not drained")
         end_episode(runtime)
         if runtime.episode_logger is not None:
             runtime.episode_logger.finalize()

@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import logging
 import queue
+from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from core.app import run as app
+from core.app.collection_capture import CollectionCaptureRunner
 from core.app.handlers import control, recording
 from core.app.state import (
     RuntimeState,
@@ -103,7 +106,6 @@ class _CollectionTransport:
         self.hil_modes: list[str] = []
         self.published: list[tuple[str, np.ndarray]] = []
         self.sleep_count = 0
-        self.lockstep = False
         self.action_capture_prepared = 0
 
     def supports_collection(self) -> bool:
@@ -155,8 +157,8 @@ class _CollectionTransport:
     def has_sim_publishers(self) -> bool:
         return False
 
-    def requires_fresh_observation_for_action(self) -> bool:
-        return self.lockstep
+    def uses_simulator_clock(self) -> bool:
+        return True
 
     def prepare_action_observation_capture(self) -> None:
         self.action_capture_prepared += 1
@@ -359,7 +361,7 @@ def test_record_executed_action_ingests_raw_snapshot_for_active_loggers():
     np.testing.assert_allclose(rollout_logger.states[0], runtime.transport.latest_qpos)
 
 
-def test_publish_next_action_captures_observation_before_sim_action():
+def test_publish_next_action_leaves_sim_recording_to_applied_action_capture():
     class _LoopStrategy:
         def is_loop_running(self) -> bool:
             return True
@@ -370,7 +372,6 @@ def test_publish_next_action_captures_observation_before_sim_action():
     runtime, session = _runtime_and_session()
     runtime.infer_strategy = _LoopStrategy()
     runtime.episode_logger = _RawEpisodeLogger()
-    runtime.transport.lockstep = True
     runtime.transport.raw_snapshots.append(
         RawCollectionSnapshot(timestamp=3.0, decode_raw=lambda: CollectionRawBatch())
     )
@@ -378,12 +379,11 @@ def test_publish_next_action_captures_observation_before_sim_action():
 
     assert control.publish_next_action(_config(), runtime, session)
 
-    assert runtime.transport.events == ["capture", "qpos", "publish:sim"]
-    assert len(runtime.episode_logger.snapshots) == 1
-    np.testing.assert_allclose(runtime.episode_logger.actions[0], [0.7, 0.8])
+    assert runtime.transport.events == ["publish:sim"]
+    assert runtime.episode_logger.snapshots == []
 
 
-def test_publish_next_action_waits_for_fresh_recording_observation():
+def test_publish_next_action_does_not_wait_for_sim_observation():
     class _LoopStrategy:
         def __init__(self) -> None:
             self.pop_count = 0
@@ -399,19 +399,87 @@ def test_publish_next_action_waits_for_fresh_recording_observation():
     strategy = _LoopStrategy()
     runtime.infer_strategy = strategy
     runtime.episode_logger = _RawEpisodeLogger()
-    runtime.transport.lockstep = True
-    for mode in (SessionMode.SIM, SessionMode.REAL):
-        session.mode = mode
+    session.mode = SessionMode.SIM
 
-        assert not control.publish_next_action(_config(), runtime, session)
+    assert control.publish_next_action(_config(), runtime, session)
 
-        assert strategy.pop_count == 0
-        assert runtime.transport.events == ["capture"]
-        assert runtime.transport.published == []
-        runtime.transport.events.clear()
+    assert strategy.pop_count == 1
+    assert runtime.transport.events == ["publish:sim"]
 
 
-def test_publish_next_action_keeps_non_lockstep_async_publish_cadence():
+def test_sim_tick_capture_requires_contiguous_source_frames():
+    snapshots = [
+        RawCollectionSnapshot(
+            timestamp=float(frame_id) / 30.0,
+            decode_raw=lambda: CollectionRawBatch(),
+            source_frame_id=frame_id,
+        )
+        for frame_id in (0, 2)
+    ]
+    recorded = []
+    logger_obj = SimpleNamespace(
+        has_active_episode=True,
+        is_collection_enabled=False,
+        ingest_raw_episode_snapshot=recorded.append,
+    )
+    transport = SimpleNamespace(
+        acquire_collection_raw=lambda: snapshots.pop(0) if snapshots else None
+    )
+    runtime = SimpleNamespace(
+        episode_logger=logger_obj,
+        rollout_episode_logger=None,
+        transport=transport,
+    )
+    runner = CollectionCaptureRunner(runtime, 30, 16, simulator_ticks=True)
+
+    with pytest.raises(ValueError, match="expected 1, got 2"):
+        runner._capture_tick()
+
+    assert [snapshot.source_frame_id for snapshot in recorded] == [0]
+
+
+def test_sim_tick_capture_drains_through_exclusive_stop_boundary():
+    snapshots = [
+        RawCollectionSnapshot(
+            timestamp=float(frame_id) / 30.0,
+            decode_raw=lambda: CollectionRawBatch(),
+            source_frame_id=frame_id,
+        )
+        for frame_id in (0, 1)
+    ]
+    recorded = []
+    runtime = SimpleNamespace(
+        episode_logger=SimpleNamespace(
+            has_active_episode=True,
+            ingest_raw_episode_snapshot=recorded.append,
+        ),
+        rollout_episode_logger=None,
+        transport=SimpleNamespace(
+            acquire_collection_raw=lambda: snapshots.pop(0) if snapshots else None
+        ),
+    )
+    runner = CollectionCaptureRunner(runtime, 30, 16, simulator_ticks=True)
+
+    runner.stop(final_source_frame_id=2)
+
+    assert [snapshot.source_frame_id for snapshot in recorded] == [0, 1]
+
+
+def test_sim_tick_capture_accepts_zero_frame_stop_boundary():
+    runtime = SimpleNamespace(
+        episode_logger=SimpleNamespace(
+            has_active_episode=True,
+            ingest_raw_episode_snapshot=lambda _snapshot: None,
+        ),
+        rollout_episode_logger=None,
+        transport=SimpleNamespace(acquire_collection_raw=lambda: None),
+    )
+    runner = CollectionCaptureRunner(runtime, 30, 16, simulator_ticks=True)
+
+    runner.stop(final_source_frame_id=0)
+
+
+def test_publish_next_action_keeps_async_publish_cadence():
     class _LoopStrategy:
         def __init__(self) -> None:
             self.pop_count = 0
@@ -444,7 +512,7 @@ def test_publish_next_action_keeps_non_lockstep_async_publish_cadence():
     ]
 
 
-def test_publish_next_action_captures_non_lockstep_recording_after_publish():
+def test_publish_next_action_captures_real_recording_after_publish():
     class _LoopStrategy:
         def is_loop_running(self) -> bool:
             return True

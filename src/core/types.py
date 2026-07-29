@@ -98,10 +98,12 @@ class RawCollectionSnapshot:
             (zmq wire ``t`` / ROS ``header.stamp``). Stamped on the main thread
             so ingest backpressure can never shift it.
         decode_raw: Thread-safe closure returning timestamped raw stream samples.
+        source_frame_id: Optional source-owned frame index used for continuity checks.
     """
 
     timestamp: float
     decode_raw: Callable[[], CollectionRawBatch]
+    source_frame_id: int | None = None
 
 
 @dataclasses.dataclass

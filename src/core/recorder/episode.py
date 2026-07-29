@@ -161,7 +161,7 @@ class RawEpisodeSnapshot:
     """One raw eval/rollout source snapshot plus the action executed at that tick."""
 
     snapshot: RawCollectionSnapshot
-    action_qpos: np.ndarray
+    action_qpos: np.ndarray | None = None
     intervention: bool = False
     segment_index: int = -1
 
@@ -323,20 +323,22 @@ class EpisodeLogger:
     def ingest_raw_episode_snapshot(
         self,
         snapshot: RawCollectionSnapshot,
-        action: np.ndarray,
+        action: np.ndarray | None = None,
         state_qpos: np.ndarray | None = None,
     ) -> None:
-        """Store one pre-decode eval/rollout snapshot and executed action."""
+        """Store one pre-decode eval/rollout snapshot and optional client-owned action."""
         if not self._active:
             return
-        action_qpos = np.asarray(action, dtype=np.float32).copy()
+        action_qpos = (
+            None if action is None else np.asarray(action, dtype=np.float32).copy()
+        )
         self._raw_episode_snapshots.append(
             RawEpisodeSnapshot(
                 snapshot=snapshot,
                 action_qpos=action_qpos,
             )
         )
-        if state_qpos is not None:
+        if state_qpos is not None and action_qpos is not None:
             self._live_steps.append(
                 Observation(
                     images={},
@@ -514,7 +516,9 @@ class EpisodeLogger:
         raw_snapshots = [
             RawEpisodeSnapshot(
                 snapshot=sample.snapshot,
-                action_qpos=sample.action_qpos.copy(),
+                action_qpos=(
+                    None if sample.action_qpos is None else sample.action_qpos.copy()
+                ),
                 intervention=sample.intervention,
                 segment_index=sample.segment_index,
             )
@@ -731,15 +735,31 @@ class EpisodeLogger:
                 else max(batch.end_time, sample.timestamp)
             )
 
-    def _decode_raw_episode_snapshots(self, payload: RawEpisodeSavePayload) -> None:
+    def _decode_raw_episode_snapshots(
+        self, payload: RawEpisodeSavePayload
+    ) -> list[int] | None:
+        source_frame_ids = [
+            raw.snapshot.source_frame_id
+            for raw in payload.raw_snapshots
+            if raw.snapshot.source_frame_id is not None
+        ]
+        if source_frame_ids and len(source_frame_ids) != len(payload.raw_snapshots):
+            raise ValueError("raw episode mixes framed and unframed snapshots")
+        if source_frame_ids:
+            expected = list(range(source_frame_ids[0], source_frame_ids[0] + len(source_frame_ids)))
+            if source_frame_ids != expected:
+                raise ValueError(
+                    f"non-contiguous raw episode source frames: {source_frame_ids}"
+                )
         for raw in payload.raw_snapshots:
             batch = raw.snapshot.decode_raw()
-            batch.vectors["action_qpos"] = [
-                CollectionRawSample(
-                    raw.snapshot.timestamp,
-                    raw.action_qpos.copy(),
-                )
-            ]
+            if raw.action_qpos is not None:
+                batch.vectors["action_qpos"] = [
+                    CollectionRawSample(
+                        raw.snapshot.timestamp,
+                        raw.action_qpos.copy(),
+                    )
+                ]
             self._merge_raw_episode_batch(payload.raw_batch, batch)
             payload.frame_labels.append(
                 RawEpisodeFrameLabel(
@@ -749,6 +769,7 @@ class EpisodeLogger:
                 )
             )
         payload.raw_snapshots = []
+        return source_frame_ids or None
 
     def _append_intervention_segments_to_raw_episode(
         self,
@@ -854,7 +875,7 @@ class EpisodeLogger:
         payload = job.raw_episode_payload
         if payload is None:
             return
-        self._decode_raw_episode_snapshots(payload)
+        source_frame_ids = self._decode_raw_episode_snapshots(payload)
         fields = self._raw_episode_vector_fields(payload.raw_batch)
         camera_keys = tuple(payload.raw_batch.images.keys())
         frames, report = align_collection_samples(
@@ -867,6 +888,11 @@ class EpisodeLogger:
         )
         if not frames:
             raise ValueError("raw episode produced 0 frames")
+        if source_frame_ids is not None and len(frames) != len(source_frame_ids):
+            raise ValueError(
+                "simulator frame count changed during fixed-clock alignment: "
+                f"{len(source_frame_ids)} source frames -> {len(frames)} rows"
+            )
         issues = [
             QualityIssue("red", issue.code, issue.detail) for issue in report.issues
         ]
@@ -905,6 +931,8 @@ class EpisodeLogger:
             "index": list(range(global_index, global_index + n_frames)),
             "task_index": [job.task_index] * n_frames,
         }
+        if source_frame_ids is not None:
+            columns["sim_frame_id"] = source_frame_ids
         if any(frame.state_eef is not None for frame in frames):
             columns[self._keys.eef_key] = [
                 None
@@ -1482,6 +1510,17 @@ class EpisodeLogger:
         # fps must equal the integer target used to synthesize timestamps, not the
         # measured (jittery) average — LeRobot validates timestamp[i] == i/fps.
         fps = float(self._fps)
+        features = self._build_features(fps, video_keys)
+        data_dir = self._log_dir / "data" / "chunk-000"
+        if any(
+            "sim_frame_id" in pq.read_schema(path).names
+            for path in data_dir.glob("*.parquet")
+        ):
+            features["sim_frame_id"] = {
+                "dtype": "int64",
+                "shape": [1],
+                "names": None,
+            }
         info = build_info(
             robot_type=self._robot.name,
             total_episodes=total_episodes,
@@ -1489,7 +1528,7 @@ class EpisodeLogger:
             total_tasks=len(self._task_to_index),
             total_videos=total_videos,
             fps=fps,
-            features=self._build_features(fps, video_keys),
+            features=features,
         )
         if self._eval_mode:
             info["eval"] = self._eval_info(episodes)

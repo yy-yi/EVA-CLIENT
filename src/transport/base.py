@@ -101,8 +101,8 @@ class TransportBridge(abc.ABC):
         """True if the backend can also publish actions to a simulation target."""
         return False
 
-    def requires_fresh_observation_for_action(self) -> bool:
-        """True when publishing an action requires a fresh pre-action observation."""
+    def uses_simulator_clock(self) -> bool:
+        """True when state/action recording is owned by an external simulator clock."""
         return False
 
     def prepare_action_observation_capture(self) -> None:
@@ -185,6 +185,10 @@ class TransportBridge(abc.ABC):
 
     def stop_collection(self) -> None:
         """Signal the source to stop emitting collection frames (no-op default)."""
+        return None
+
+    def stop_sim_episode(self) -> int | None:
+        """Freeze a simulator episode and return its exclusive source-frame boundary."""
         return None
 
     def advance_environment(self) -> bool:

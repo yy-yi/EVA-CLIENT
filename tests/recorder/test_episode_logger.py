@@ -593,6 +593,55 @@ def test_raw_episode_snapshots_decode_on_async_save_worker(tmp_path):
     )
 
 
+def test_simulator_snapshots_preserve_applied_actions_and_frame_ids(tmp_path):
+    logger = _logger(tmp_path, fps=30)
+
+    def snapshot(frame_id: int) -> RawCollectionSnapshot:
+        timestamp = frame_id / 30.0
+
+        def decode_raw() -> CollectionRawBatch:
+            return CollectionRawBatch(
+                vectors={
+                    "state_qpos": [
+                        CollectionRawSample(
+                            timestamp,
+                            np.full(_DIM, frame_id, dtype=np.float32),
+                        )
+                    ],
+                    "action_qpos": [
+                        CollectionRawSample(
+                            timestamp,
+                            np.full(_DIM, frame_id + 10, dtype=np.float32),
+                        )
+                    ],
+                },
+                start_time=timestamp,
+                end_time=timestamp,
+                image_streams_expected=False,
+            )
+
+        return RawCollectionSnapshot(
+            timestamp=timestamp,
+            decode_raw=decode_raw,
+            source_frame_id=frame_id,
+        )
+
+    logger.start_episode("t")
+    for frame_id in range(3):
+        logger.ingest_raw_episode_snapshot(snapshot(frame_id))
+    assert logger.end_episode()
+    logger.finalize()
+
+    table = pq.read_table(tmp_path / "data" / "chunk-000" / "episode_000000.parquet")
+    assert table.column("sim_frame_id").to_pylist() == [0, 1, 2]
+    np.testing.assert_allclose(
+        table.column("action").to_pylist(),
+        [[10.0] * _DIM, [11.0] * _DIM, [12.0] * _DIM],
+    )
+    info = json.loads((tmp_path / "meta" / "info.json").read_text())
+    assert info["features"]["sim_frame_id"]["dtype"] == "int64"
+
+
 def test_pending_score_patch_applies_to_async_save_job(tmp_path):
     logger = _logger(tmp_path, fps=10, async_save=True)
 
