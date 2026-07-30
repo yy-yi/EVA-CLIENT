@@ -155,6 +155,17 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
         "inside_plate": True,
         "stable_steps": 10,
     }
+    task_progress = {
+        "protocol_version": 1,
+        "schema": {
+            "id": "pick_and_place/v1",
+            "task": "pick_and_place",
+            "milestones": [{"id": "place", "label": "Place target", "weight": 1}],
+            "parameters": {},
+        },
+        "milestones": {"place": {"achieved": True, "step": 42}},
+        "measurements": {},
+    }
     obs = WireObservation(
         t=123.456,
         images=images,
@@ -163,6 +174,7 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
         frame_id=42,
         success=True,
         success_details=success_details,
+        task_progress=task_progress,
         scene_index=3,
         seed=7,
         task_name="pick_and_place",
@@ -184,6 +196,7 @@ def test_observation_roundtrip_preserves_images_state_and_timestamp():
     assert back.frame_id == 42
     assert back.success is True
     assert back.success_details == success_details
+    assert back.task_progress == task_progress
     assert back.scene_index == 3
     assert back.seed == 7
     assert back.task_name == "pick_and_place"
@@ -243,6 +256,32 @@ def test_observation_reader_reports_success_details():
 
     assert status["success"] is True
     assert status["success_details"] == success_details
+
+
+def test_observation_reader_reports_task_progress():
+    task_progress = {
+        "protocol_version": 1,
+        "schema": {
+            "id": "mock/v1",
+            "task": "mock",
+            "milestones": [{"id": "done", "label": "Done", "weight": 1}],
+            "parameters": {},
+        },
+        "milestones": {"done": {"achieved": False, "step": None}},
+        "measurements": {},
+    }
+    reader = object.__new__(_ObservationReader)
+    reader._observation_revision = 0
+    reader._drain_latest = lambda: WireObservation(
+        t=3.0,
+        images={},
+        state={},
+        task_progress=task_progress,
+    )
+
+    status = reader.get_task_status()
+
+    assert status["task_progress"] == task_progress
 
 
 def test_wire_observation_converts_to_collection_frame_by_robot_group_order():

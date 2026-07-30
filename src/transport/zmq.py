@@ -68,6 +68,7 @@ class WireObservation:
         frame_id: optional simulator episode frame index.
         success: optional simulator task-success flag.
         success_details: optional simulator task-success diagnostics.
+        task_progress: optional task-owned process milestone snapshot.
         scene_index: optional simulator scene index for offline scene rebuild.
         seed: optional simulator placement-jitter seed for offline scene rebuild.
         task_name: optional simulator task behavior name for offline scene rebuild.
@@ -90,6 +91,7 @@ class WireObservation:
     frame_id: int | None = None
     success: bool | None = None
     success_details: dict[str, float | int | bool] | None = None
+    task_progress: dict | None = None
     scene_index: int | None = None
     seed: int | None = None
     task_name: str | None = None
@@ -147,6 +149,8 @@ def pack_observation(obs: WireObservation) -> bytes:
         payload["success"] = bool(obs.success)
     if obs.success_details is not None:
         payload["success_details"] = obs.success_details
+    if obs.task_progress is not None:
+        payload["task_progress"] = obs.task_progress
     if obs.scene_index is not None:
         payload["scene_index"] = int(obs.scene_index)
     if obs.seed is not None:
@@ -196,6 +200,7 @@ def unpack_observation(payload: bytes) -> WireObservation:
         frame_id=None if "frame_id" not in raw else int(raw["frame_id"]),
         success=None if "success" not in raw else bool(raw["success"]),
         success_details=(None if "success_details" not in raw else dict(raw["success_details"])),
+        task_progress=None if "task_progress" not in raw else dict(raw["task_progress"]),
         scene_index=None if "scene_index" not in raw else int(raw["scene_index"]),
         seed=None if "seed" not in raw else int(raw["seed"]),
         task_name=None if "task_name" not in raw else str(raw["task_name"]),
@@ -464,6 +469,7 @@ class _ObservationReader:
             "frame_id": None if wire_obs is None else wire_obs.frame_id,
             "success": None if wire_obs is None else wire_obs.success,
             "success_details": None if wire_obs is None else wire_obs.success_details,
+            "task_progress": None if wire_obs is None else wire_obs.task_progress,
             "scene_index": None if wire_obs is None else wire_obs.scene_index,
             "seed": None if wire_obs is None else wire_obs.seed,
             "task_name": None if wire_obs is None else wire_obs.task_name,
