@@ -22,8 +22,8 @@ from tools.rsi_export_episode import export_episode
 pytestmark = pytest.mark.integration
 
 
-@pytest.fixture
-def recorded_candidate(tmp_path):
+@pytest.fixture(params=[4])
+def recorded_candidate(tmp_path, request):
     source = tmp_path / "source"
     robot = ROBOT_REGISTRY.build("dual_yam")
     video_keys = {
@@ -35,21 +35,26 @@ def recorded_candidate(tmp_path):
         eef_key="observations.state.eef", video_keys=video_keys,
     )
     recorder = EpisodeLogger(source, robot, 30, keys, convert_bgr_to_rgb=False)
-    states = np.arange(4 * 14, dtype=np.float32).reshape(4, 14) / 100
+    frame_count = request.param
+    states = np.arange(frame_count * 14, dtype=np.float32).reshape(frame_count, 14) / 100
+    states[:, 6] = np.arange(frame_count, dtype=np.float32) / frame_count
+    states[:, 13] = 1. - states[:, 6]
     recorder.start_episode("recorded source task")
     for index, state in enumerate(states):
         images = {
-            camera: np.full((32, 32, 3), (40 + index * 20, 80 + offset * 20, 150), np.uint8)
+            camera: np.full((32, 32, 3), ((40 + index * 20) % 256, 80 + offset * 20, 150),
+                            np.uint8)
             for offset, camera in enumerate(video_keys)
         }
         recorder.record_step(Observation(images=images, state_qpos=state), state + 3,
-                             timestamp=index / 30)
+                             timestamp=index * (1. / 30))
     assert recorder.end_episode()
     recorder.finalize()
     actions = states[1:] - 0.05
     candidate = {
         "source": "agent_reviewed_sandbox_candidate", "candidate_id": "candidate_test",
-        "actions": actions.tolist(), "action_indices": [1, 2, 3], "control_hz": 30,
+        "actions": actions.tolist(), "action_indices": list(range(1, frame_count)),
+        "control_hz": 30,
         "hardware_executed_steps": 0, "feedback": "recorded; independent of predictions",
         "observation": {"frame_id": 1, "world_instance_id": "recorded_test"},
     }
@@ -125,6 +130,23 @@ def test_unexported_trial_collection_data(recorded_candidate, tmp_path, review):
     for path in receipt["videos"].values():
         frames = list(video_frames(Path(path)))
         assert len(frames) == 3 and all(frame.shape == (32, 32, 3) for frame in frames)
+
+
+@pytest.mark.parametrize("recorded_candidate", [65], indirect=True)
+def test_30hz_export_preserves_every_joint_and_gripper_sample(recorded_candidate, tmp_path):
+    source, predictions, states, actions, video_keys = recorded_candidate
+    source_table = pq.read_table(LeRobotDatasetIO(source).episode_parquet(0))
+    np.testing.assert_array_equal(source_table["observations.state.qpos"].to_pylist(), states)
+    receipt = export_episode(
+        source, 0, predictions, tmp_path / "long_export", {"prompt_en": "Continue the drawer task"},
+    )
+    table = pq.read_table(receipt["parquet"])
+    assert receipt["frames"] == table.num_rows == 64
+    np.testing.assert_array_equal(table["observations.state.qpos"].to_pylist(), states[1:])
+    np.testing.assert_array_equal(table["action.qpos"].to_pylist(), actions)
+    assert set(receipt["videos"]) == set(video_keys)
+    for path in receipt["videos"].values():
+        assert sum(1 for _ in video_frames(Path(path))) == 64
 
 
 @pytest.mark.parametrize("changes", [

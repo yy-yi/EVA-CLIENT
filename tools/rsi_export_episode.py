@@ -122,9 +122,10 @@ def export_episode(
             missing = [camera for camera, image in images.items() if image is None]
             if missing:
                 raise ValueError(f"source frame {index} missing from camera videos: {missing}")
+            # Match the alignment grid's arithmetic; a later ULP selects the previous gripper sample.
             recorder.record_step(
                 Observation(images=cast(dict[str, np.ndarray], images), state_qpos=states[index]),
-                action, timestamp=offset / fps,
+                action, timestamp=offset * (1.0 / fps),
             )
     if not recorder.end_episode():
         raise RuntimeError("EpisodeLogger did not save the candidate")
