@@ -26,7 +26,9 @@ if os.environ.get("EVA_RSI_CREDENTIALS"):
     ).expanduser().resolve())]
 
 rsi = dict(url=f"http://127.0.0.1:{__runtime['service_port']}", command=__command,
-           cwd=str(__agent_root), start_timeout_s=60.0)
+           cwd=str(__agent_root), start_timeout_s=60.0,
+           tasks_dir=str(__agent_root / "work_dirs/rsi/client"),
+           initial_tasks=__runtime.get("tasks", []))
 console = dict(initial_tab="rsi")
 robot = dict(type="dual_yam")
 transport = dict(

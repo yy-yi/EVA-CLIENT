@@ -553,23 +553,64 @@
   /* canvas views: control column | vertical instrument stage (3D+cams / action / state) */
   #view-debug   { grid-template-columns: 420px 1fr; gap: 0; }
   #view-rl      { grid-template-columns: 420px 1fr; gap: 0; }
-  #view-rsi     { grid-template-columns: 420px 1fr; gap: 0; }
+  #view-rsi { grid-template-columns: 380px minmax(0, 1fr); gap: 0; }
   .rsi-active .telemetry > :not(.brand) { display: none; }
-  .rsi-status > div { margin-bottom: 8px; }
-  .rsi-status strong { float: right; }
-  #rsi-missing { white-space: pre-line; }
-  .rsi-visuals { min-width: 0; }
-  .rsi-render { text-align: center; min-height: 300px; }
-  .rsi-render img { width: 100%; max-height: 65vh; object-fit: contain; }
-  .rsi-cameras { display: flex; flex-wrap: wrap; gap: 12px; }
-  .rsi-cameras > div { flex: 1 1 200px; min-width: 0; }
-  .rsi-cameras img, #rsi-artifacts img { width: 100%; object-fit: contain; }
-  #rsi-artifacts a { display: block; margin-block: 8px; }
-  #rsi-seek { width: 100%; }
-  .rsi-qpos { overflow-wrap: anywhere; margin-top: 8px; }
+  #view-rsi .col-control { border-right: 1px solid var(--rule-strong); }
+  #view-rsi .panel { margin-bottom: 16px; }
+  #view-rsi .rsi-status .kv { align-items: flex-start; gap: 12px; }
+  #view-rsi .rsi-status .v { text-align: right; overflow-wrap: anywhere; }
+  #view-rsi .rsi-note { margin: 10px 0 0; color: var(--ink-dim); font-size: 11px; line-height: 1.6; }
+  #view-rsi .rsi-task-preview { margin: 12px 0; color: var(--ink-dim); white-space: pre-wrap; }
+  #view-rsi .rsi-task-editor { border-top: 1px solid var(--rule); padding-top: 10px; }
+  #view-rsi .rsi-task-editor summary { cursor: pointer; font-size: 12px; }
+  #view-rsi .rsi-task-editor input { width: 100%; padding: 8px 10px; border: 1px solid var(--rule-strong); border-radius: var(--radius-sm); font: inherit; background: var(--paper); color: var(--ink); }
+  #view-rsi .rsi-task-editor textarea { margin-bottom: 8px; }
+  #view-rsi .rsi-nav-actions { margin-top: 12px; }
+  #view-rsi .rsi-visuals { min-width: 0; padding: 20px; }
+  #view-rsi .rsi-workspace-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 18px; }
+  #view-rsi .rsi-workspace-head .sub-h { margin: 0 0 3px; }
+  #view-rsi .rsi-workspace-head h1 { margin: 0; font-size: 23px; font-weight: 600; letter-spacing: -.03em; }
+  #view-rsi .rsi-workspace-head > .sig { padding: 4px 10px; border: 1px solid var(--rule-strong); border-radius: 99px; color: var(--ink-dim); font: 10px var(--mono); white-space: nowrap; }
+  #view-rsi .rsi-views { display: grid; grid-template-columns: minmax(0, 1fr) minmax(180px, 240px); gap: 14px; align-items: start; }
+  #view-rsi .rsi-render { min-height: 340px; aspect-ratio: 4 / 3; display: flex; align-items: center; justify-content: center; padding: 0; overflow: hidden; background: var(--ink); color: var(--paper); }
+  #view-rsi .rsi-render img { display: block; width: 100%; max-height: 65vh; object-fit: contain; }
+  #view-rsi .rsi-render img[hidden] { display: none; }
+  #view-rsi #rsi-render-empty { text-align: center; padding: 36px 18px; color: var(--ink-faint); }
+  #view-rsi #rsi-render-empty p { color: var(--paper); margin: 16px 0 4px; }
+  #view-rsi .rsi-empty-symbol { display: inline-flex; padding: 14px 18px; border: 1px solid var(--ink-dim); border-radius: var(--radius); font: 14px var(--mono); letter-spacing: .15em; }
+  #view-rsi .rsi-cameras { display: grid; gap: 9px; }
+  #view-rsi .rsi-cameras > figure { position: relative; margin: 0; border: 1px solid var(--rule); border-radius: var(--radius-sm); overflow: hidden; background: var(--ink); min-width: 0; }
+  #view-rsi .rsi-cameras figcaption { position: absolute; bottom: 0; left: 0; right: 0; padding: 5px 9px; background: rgba(31,30,28,.72); color: var(--paper); font: 9px var(--mono); letter-spacing: .05em; }
+  #view-rsi .rsi-cameras img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; }
+  #view-rsi #rsi-missing { white-space: pre-line; }
+  #view-rsi #rsi-seek { width: 100%; accent-color: var(--accent); }
+  #view-rsi .rsi-qpos { overflow-wrap: anywhere; margin-top: 8px; color: var(--ink-dim); font-size: 10px; line-height: 1.8; }
+  #view-rsi #rsi-artifacts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  #view-rsi .rsi-artifact { border: 1px solid var(--rule); border-radius: var(--radius-sm); padding: 10px; min-width: 0; }
+  #view-rsi .rsi-artifact a { display: block; color: var(--ink); overflow-wrap: anywhere; text-decoration: none; font: 11px var(--mono); }
+  #view-rsi .rsi-artifact a:hover { color: var(--accent); text-decoration: underline; }
+  #view-rsi .rsi-artifact img { display: block; width: 100%; object-fit: contain; margin-top: 8px; border-radius: 4px; }
+  #view-rsi .rsi-run-list { display: grid; gap: 7px; margin-top: 12px; }
+  #view-rsi .rsi-run-item { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; letter-spacing: 0; text-transform: none; }
+  #view-rsi .rsi-run-item span { min-width: 0; overflow-wrap: anywhere; }
+  #view-rsi .rsi-run-item small { color: var(--ink-dim); white-space: nowrap; }
+  #view-rsi .rsi-run-item.selected { border-color: var(--ink); background: var(--signal-soft); }
+  #view-rsi .rsi-run-detail { margin-top: 12px; border-top: 1px solid var(--rule); padding-top: 12px; overflow-wrap: anywhere; }
+  #view-rsi .rsi-run-detail a { color: var(--accent); }
+  #view-rsi .rsi-run-detail pre { max-height: 280px; overflow: auto; font: 10px var(--mono); background: var(--surface); padding: 10px; border-radius: var(--radius-sm); white-space: pre-wrap; }
+  @media (max-width: 1100px) {
+    #view-rsi { grid-template-columns: 340px minmax(0, 1fr); }
+    #view-rsi .rsi-views { grid-template-columns: minmax(0, 1fr); }
+    #view-rsi .rsi-cameras { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #view-rsi .rsi-render { min-height: 260px; }
+  }
   @media (max-width: 760px) {
-    #view-rsi { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+    #view-rsi { grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; overflow-y: auto; }
     #view-rsi > .col { overflow: visible; }
+    #view-rsi .rsi-visuals { padding: 16px; }
+    #view-rsi .rsi-workspace-head { align-items: flex-start; }
+    #view-rsi .rsi-workspace-head h1 { font-size: 20px; }
+    #view-rsi #rsi-artifacts { grid-template-columns: minmax(0, 1fr); }
   }
   #view-replay  { grid-template-columns: 420px 1fr; gap: 0; }
   #view-manual  { grid-template-columns: 420px 1fr; gap: 0; }

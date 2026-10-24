@@ -361,6 +361,16 @@ def _handle_web_command(
         session.status.value,
     )
 
+    if verb in {"rsi_send", "rsi_home"}:
+        assert runtime.console_ctx is not None
+        control = runtime.console_ctx.rsi_controls
+        if control is not None:
+            if verb == "rsi_send":
+                control.execute(runtime.console_ctx)
+            else:
+                control.home(runtime.console_ctx, int(arg))
+        return
+
     if verb == "bootstrap":
         # One-time setup at server startup: connect policy + select REAL + select strategy.
         # The actual run_setup() (with reset trajectory) happens lazily on first start.

@@ -33,6 +33,7 @@ Log/
 tools/*
 !tools/__init__.py
 !tools/openloop.py
+!tools/rsi_export_episode.py
 !tools/run_r1lite_fake_e2e.py
 !tools/conversion/
 !tools/conversion/**

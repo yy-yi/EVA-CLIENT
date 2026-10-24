@@ -6,6 +6,7 @@ import dataclasses
 import logging
 import queue
 import time
+from collections.abc import Callable
 from functools import partial
 from typing import Any, cast
 
@@ -436,6 +437,7 @@ def publish_action_chunk(
     target: OutputTarget,
     session: SessionState | None = None,
     advance_session_chunk_index: bool = False,
+    feedback_guard: Callable[[], None] | None = None,
 ) -> bool:
     """Publish a whole action chunk to one target at the configured publish rate.
 
@@ -466,6 +468,8 @@ def publish_action_chunk(
                 )
                 return False
         if target is OutputTarget.REAL:
+            if feedback_guard is not None:
+                feedback_guard()
             publish_real_action_with_preview(config, runtime, action, session=session)
             if session is not None:
                 session.step_index += 1
@@ -1223,7 +1227,8 @@ def run_one_chunk_on_sim(config: ConfigDict, runtime: RuntimeState, session: Ses
 
 
 def run_pending_chunk_on_real(
-    config: ConfigDict, runtime: RuntimeState, session: SessionState
+    config: ConfigDict, runtime: RuntimeState, session: SessionState,
+    feedback_guard: Callable[[], None] | None = None,
 ) -> bool:
     """STEP mode: publish the staged sim chunk to the real robot.
 
@@ -1239,7 +1244,8 @@ def run_pending_chunk_on_real(
         return False
     step_index = session.step_index
     if not publish_action_chunk(
-        config, runtime, session.pending_real_chunk, OutputTarget.REAL, session=session
+        config, runtime, session.pending_real_chunk, OutputTarget.REAL, session=session,
+        feedback_guard=feedback_guard,
     ):
         return False
     logger.info("Published %d actions to real", len(session.pending_real_chunk))

@@ -67,56 +67,110 @@
 
     <div class="view" id="view-rsi">
       <div class="col col-control">
-        <div class="panel">
-          <div class="panel-h"><span class="step-badge">1</span>RSI · 状态</div>
-          <div class="card rsi-status" role="status">
-            <div>服务 <strong id="rsi-service">等待连接</strong></div>
-            <div>建模 / 规划 <strong id="rsi-stage">—</strong></div>
-            <div>仿真 <strong id="rsi-simulation-status">—</strong></div>
-            <div>真机 <strong id="rsi-robot">未连接</strong></div>
-            <div>数据来源 <strong id="rsi-source">—</strong></div>
-            <div>API 参考估算 <strong id="rsi-cost">未知</strong></div>
-            <p id="rsi-cost-scope">计费口径未知；实际账单未知</p>
-            <div>API QPS <strong id="rsi-qps">待测量</strong></div>
-            <div>模型 <strong id="rsi-model">—</strong></div>
-            <div class="errline" id="rsi-error"></div>
+        <div class="panel" id="rsi-panel-task">
+          <div class="panel-h"><span class="step-badge">1</span>TASK <span class="n" id="rsi-task-count">—</span></div>
+          <div class="card">
+            <label class="sub-h" for="rsi-task-list">SELECT TASK</label>
+            <select class="choice-select task-select" id="rsi-task-list" aria-label="RSI task"></select>
+            <p class="rsi-task-preview" id="rsi-task-preview">选择任务后开始推理。</p>
+            <details class="rsi-task-editor" id="rsi-task-editor">
+              <summary>编写任务</summary>
+              <label class="sub-h" for="rsi-task-name">TASK ID</label>
+              <input id="rsi-task-name" type="text" placeholder="例如：open_upper_drawer" />
+              <label class="sub-h" for="rsi-task-prompt">INSTRUCTION</label>
+              <textarea id="rsi-task-prompt" class="review-note" rows="4" placeholder="写下目标、操作对象与完成条件"></textarea>
+              <button class="btn full" id="rsi-task-save">SAVE TASK</button>
+            </details>
+            <div class="errline" id="rsi-task-error"></div>
+          </div>
+        </div>
+        <div class="panel" id="rsi-panel-control">
+          <div class="panel-h"><span class="step-badge">2</span>CONTROL</div>
+          <div class="card">
+            <div class="sub-h">SEND MODE</div>
+            <div class="row-2" id="rsi-dispatch-list" role="group" aria-label="Dispatch mode">
+              <button class="seg active" data-rsi-dispatch="manual" aria-pressed="true">MANUAL</button>
+              <button class="seg" data-rsi-dispatch="auto" aria-pressed="false">AUTO</button>
+            </div>
+            <p class="rsi-note" id="rsi-execution-note">推理后先仿真回放，再手动发送真机。</p>
+            <div class="btn-grid">
+              <button class="btn primary full" id="rsi-run" disabled><span class="rec-dot"></span>INFER · 开始推理</button>
+              <button class="btn full" id="rsi-replay" disabled>SIM REPLAY · 仿真回放</button>
+              <button class="btn primary full" id="rsi-send" disabled>SEND TO REAL · 发送真机</button>
+              <button class="btn danger" id="rsi-stop" disabled>STOP</button>
+              <button class="btn" id="rsi-home" disabled>HOME</button>
+            </div>
+            <div class="step-state" id="rsi-stage">等待任务</div>
+            <div class="errline" id="rsi-error" role="alert"></div>
             <div class="errline" id="rsi-missing"></div>
           </div>
         </div>
         <div class="panel">
-          <div class="panel-h"><span class="step-badge">2</span>离线建模 / 规划</div>
-          <div class="card">
-            <div class="btn-grid">
-              <button class="btn primary full" id="rsi-run" disabled>开始离线建模与规划</button>
-              <button class="btn danger full" id="rsi-stop" disabled>取消</button>
+          <div class="panel-h"><span class="step-badge">3</span>CONNECTION</div>
+          <div class="card rsi-status" aria-live="polite">
+            <div class="kv"><span class="k">RSI SERVICE</span><span class="v sig" id="rsi-service" data-state="off">等待连接</span></div>
+            <div class="kv"><span class="k">ROBOT</span><span class="v sig" id="rsi-robot" data-state="off">未连接</span></div>
+            <div class="kv"><span class="k">TRANSPORT</span><span class="v" id="rsi-transport">—</span></div>
+            <div class="kv"><span class="k">SIMULATION</span><span class="v sig" id="rsi-simulation-status" data-state="off">—</span></div>
+            <div class="kv"><span class="k">SOURCE</span><span class="v" id="rsi-source">—</span></div>
+            <div class="btn-grid rsi-nav-actions">
+              <button class="btn" id="rsi-device">DEVICE</button>
+              <button class="btn" id="rsi-dashboard">DASHBOARD</button>
             </div>
-            <p>当前操作仅用于离线评测，不发送真机动作或复位指令。</p>
           </div>
         </div>
         <div class="panel">
-          <div class="panel-h"><span class="step-badge">3</span>观测帧</div>
-          <div class="card">
-            <label for="rsi-seek">帧 <span id="rsi-frame-index">—</span></label>
-            <input type="range" id="rsi-seek" min="0" max="0" value="0" disabled />
-            <div class="rsi-qpos" id="rsi-qpos">QPOS —</div>
+          <div class="panel-h">MODEL &amp; USAGE</div>
+          <div class="card rsi-status">
+            <label class="sub-h" for="rsi-provider-list">API SERVICE</label>
+            <select class="choice-select" id="rsi-provider-list" aria-label="API service"></select>
+            <label class="sub-h" for="rsi-model-list">MODEL</label>
+            <select class="choice-select" id="rsi-model-list" aria-label="Inference model"></select>
+            <div class="kv"><span class="k">ACTIVE MODEL</span><span class="v" id="rsi-model">—</span></div>
+            <div class="kv"><span class="k">API REQUESTS</span><span class="v tnum" id="rsi-requests">—</span></div>
+            <div class="kv"><span class="k">API QPS</span><span class="v tnum" id="rsi-qps">待测量</span></div>
+            <div class="kv"><span class="k">EST. COST</span><span class="v tnum" id="rsi-cost">未知</span></div>
+            <p class="rsi-note" id="rsi-cost-scope">计费口径未知；实际账单未知</p>
           </div>
-        </div>
-        <div class="panel">
-          <div class="panel-h">产物</div>
-          <div class="card" id="rsi-artifacts">暂无产物</div>
         </div>
       </div>
       <div class="col rsi-visuals">
-        <div class="panel">
-          <div class="panel-h">仿真渲染 <span id="rsi-render-source"></span></div>
-          <div class="card rsi-render">
-            <img id="rsi-render" alt="RSI 仿真渲染" hidden />
-            <p id="rsi-render-empty">尚无仿真渲染；CPU 场景预览可在产物中查看。</p>
+        <div class="rsi-workspace-head">
+          <div><div class="sub-h">RECONSTRUCT · SIMULATE · INFER</div><h1>RSI workspace</h1></div>
+          <span class="v sig" id="rsi-execution-status" data-state="off">MANUAL REVIEW</span>
+        </div>
+        <div class="rsi-views">
+          <div class="panel rsi-simulation-panel">
+            <div class="panel-h">SIMULATION <span class="n" id="rsi-render-source"></span></div>
+            <div class="card rsi-render">
+              <img id="rsi-render" alt="RSI 仿真渲染" hidden />
+              <div id="rsi-render-empty"><span class="rsi-empty-symbol">SIM</span><p>等待场景重建与仿真回放</p><small>运行推理后将在这里显示仿真视角。</small></div>
+            </div>
+          </div>
+          <div class="panel rsi-camera-panel">
+            <div class="panel-h">OBSERVATION <span class="n">RGB</span></div>
+            <div class="rsi-cameras" id="rsi-cameras">等待观测帧</div>
           </div>
         </div>
         <div class="panel">
-          <div class="panel-h">相机观测</div>
-          <div class="card rsi-cameras" id="rsi-cameras">等待观测帧</div>
+          <div class="panel-h">OBSERVATION TIMELINE <span class="n" id="rsi-frame-index">—</span></div>
+          <div class="card">
+            <label class="sub-h" for="rsi-seek">录制观测帧</label>
+            <input type="range" id="rsi-seek" min="0" max="0" value="0" disabled />
+            <div class="rsi-qpos mono" id="rsi-qpos">QPOS —</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h">SAVED RUNS <span class="n" id="rsi-run-count">0</span></div>
+          <div class="card">
+            <p class="rsi-note">每次推理自动保存轨迹、状态、相机视角与模型过程。中止的运行也保留已生成的记录。</p>
+            <div id="rsi-runs" class="rsi-run-list">暂无推理记录</div>
+            <div class="rsi-run-detail" id="rsi-run-detail" hidden></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h">ARTIFACTS · MODEL PROCESS <span class="n" id="rsi-artifact-count">0</span></div>
+          <div class="card" id="rsi-artifacts">暂无产物</div>
         </div>
       </div>
     </div>

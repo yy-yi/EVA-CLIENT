@@ -47,6 +47,7 @@ from core.app.console.collection_slots import (
 )
 from core.app.console.dashboard import build_dashboard, discover_dashboard_upload_candidates
 from core.app.console.rsi import RsiProxy
+from core.app.console.rsi_control import RsiControls
 from core.app.console.transform_worker import build_transform_blob
 from core.app.handlers import (
     _resolve_runtime_path,
@@ -633,6 +634,8 @@ class ConsoleContext:
     session: SessionState
     device_settings: DeviceSettings = dataclasses.field(default_factory=DeviceSettings)
     obs_reader: ObservationSource | None = None  # independent source for visualization
+    rsi_controls: RsiControls | None = None
+    rsi_lock: threading.Lock = dataclasses.field(default_factory=threading.Lock)
     camera_preview: Any = None
     scene: object | None = None  # UrdfScene, lazily built (None if URDF unavailable)
     scene_cache_key: object | None = None  # last qpos signature fed to scene.transforms
@@ -2216,9 +2219,28 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
     def _proxy_rsi(self, method: str, path: str, body: dict | None = None) -> None:
         rsi = self.ctx.config.get("rsi")
         url = rsi["url"] if rsi is not None else os.environ.get("EVA_RSI_URL", "")
-        status, data, content_type = RsiProxy(url).request(
-            method, path.removeprefix("/api/rsi"), body
-        )
+        proxy = RsiProxy(url)
+        route = path.removeprefix("/api/rsi")
+        local_routes = {"/tasks", "/task", "/client-status", "/mode", "/home", "/halt", "/send"}
+        if route in local_routes:
+            self._rsi_control_request(method, route, body or {}, proxy)
+            return
+        control = self.ctx.rsi_controls
+        if method == "POST" and control is not None:
+            if route == "/stop":
+                control.halt(self.ctx)
+            elif route in {"/run", "/model", "/seek", "/replay"}:
+                with control.lock:
+                    if control.pending is not None or control.executing:
+                        self._send_json(409, {"ok": False,
+                                             "error": "Stop robot send before changing RSI"})
+                        return
+        if method == "GET" and route.startswith("/runs/") and (
+            route.endswith("/download") or "/files/" in route
+        ):
+            proxy.relay_file(route, self)
+            return
+        status, data, content_type = proxy.request(method, route, body)
         self._response_status = status
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -2226,6 +2248,48 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
+
+    def _rsi_control_request(self, method: str, route: str, body: dict, proxy: RsiProxy) -> None:
+        try:
+            with self.ctx.rsi_lock:
+                if self.ctx.rsi_controls is None:
+                    config = self.ctx.runtime.active_config or self.ctx.config
+                    rsi = config.get("rsi") or {}
+                    root = Path(rsi.get("tasks_dir", Path(self.ctx.output_dir) / "rsi"))
+                    initial = rsi.get("initial_tasks", [])
+                    if not initial:
+                        initial = [{"task_id": task["task_id"], "prompt_en": task["prompt_en"],
+                                    "prompt_zh": task.get("prompt_zh", "")}
+                                   for task in _load_scene_plan(config)["tasks"]]
+                    self.ctx.rsi_controls = RsiControls(root, initial)
+            control = self.ctx.rsi_controls
+            if method == "GET" and route == "/tasks":
+                result = control.tasks()
+            elif method == "GET" and route == "/client-status":
+                result = control.status(self.ctx, _serialize_status(self.ctx))
+            elif method == "POST" and route == "/tasks":
+                result = control.save_task(body)
+            elif method == "POST" and route == "/task":
+                result = control.select_task(body["task_id"])
+            elif method == "POST" and route == "/mode":
+                result = control.set_mode(body["mode"])
+            elif method == "POST" and route == "/home":
+                control.require_hardware(self.ctx)
+                control.halt(self.ctx)
+                self._enqueue(f"web:rsi_home:{control.generation}")
+                result = {"ok": True, "queued": True}
+            elif method == "POST" and route == "/halt":
+                control.halt(self.ctx)
+                result = {"ok": True, "mode": "manual"}
+            elif method == "POST" and route == "/send":
+                result = control.stage_send(self.ctx, proxy, body["candidate_id"])
+            else:
+                self._send_json(405, {"ok": False, "error": "Unsupported RSI control method"})
+                return
+        except (ValueError, KeyError, OSError) as error:
+            self._send_json(409, {"ok": False, "error": str(error)})
+            return
+        self._send_json(200, result)
 
     # --- GET route handlers (exact-path; registered in _GET_ROUTES) ---
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
@@ -87,16 +88,37 @@ class RsiProxy:
     def __init__(self, url: str) -> None:
         self.url = url.rstrip("/")
 
+    def relay_file(self, path: str, handler) -> None:
+        """Stream saved runs without loading complete videos or archives into RAM."""
+        opener = build_opener(ProxyHandler({}))
+        try:
+            response = opener.open(self.url + path, timeout=90)
+        except (HTTPError, URLError, TimeoutError, OSError) as error:
+            status, data, content_type = self._error(502, f"RSI 文件读取失败：{error}")
+            handler.send_response(status)
+            handler.send_header("Content-Type", content_type)
+            handler.send_header("Content-Length", str(len(data)))
+            handler.end_headers()
+            handler.wfile.write(data)
+            return
+        with response:
+            handler.send_response(response.status)
+            for name in ("Content-Type", "Content-Length", "Content-Disposition"):
+                if response.headers.get(name) is not None:
+                    handler.send_header(name, response.headers[name])
+            handler.end_headers()
+            shutil.copyfileobj(response, handler.wfile, length=1024 * 1024)
+
     def request(self, method: str, path: str, body: dict | None = None) -> tuple[int, bytes, str]:
         if not self.url:
             return self._error(503, "EVA_RSI_URL 未配置", configured=False)
         if urlsplit(self.url).scheme not in {"http", "https"}:
             return self._error(503, "EVA_RSI_URL 必须为 HTTP 或 HTTPS 地址")
         allowed = {
-            "GET": {"/status", "/frame", "/artifacts"},
-            "POST": {"/seek", "/run", "/stop"},
+            "GET": {"/status", "/frame", "/artifacts", "/candidate", "/runs", "/models"},
+            "POST": {"/seek", "/run", "/stop", "/replay", "/model"},
         }
-        artifact = method == "GET" and path.startswith("/artifacts/")
+        artifact = method == "GET" and path.startswith(("/artifacts/", "/runs/"))
         if path not in allowed[method] and not artifact:
             return self._error(404, "RSI 接口不存在")
         request = Request(
