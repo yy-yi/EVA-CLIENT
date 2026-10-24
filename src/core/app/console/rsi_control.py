@@ -223,6 +223,10 @@ class RsiControls:
                 session.pending_real_chunk = pending["qpos"]
             try:
                 start_episode(runtime, session)
+                runtime.episode_logger.set_episode_meta(
+                    scope="rsi_hardware_execution", candidate_id=pending["candidate_id"],
+                    task_definition=task,
+                )
                 completed = run_pending_chunk_on_real(
                     config, runtime, session, feedback_guard=lambda: self.require_hardware(ctx),
                 )
