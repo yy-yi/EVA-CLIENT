@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from collections.abc import Generator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -131,3 +132,13 @@ def test_rsi_initial_tab_and_assets(console):
     assert console.get("/api/config").json["initial_tab"] == "rsi"
     assert b'data-tab="rsi"' in console.get("/").raw
     assert b"/api/rsi/status" in console.get("/js/rsi.js").raw
+
+
+def test_rsi_proxy_prefers_configured_url(console, rsi_service, monkeypatch):
+    configured_url = os.environ["EVA_RSI_URL"]
+    console.config.rsi = {"url": configured_url, "command": None, "cwd": None,
+                          "start_timeout_s": 1}
+    monkeypatch.setenv("EVA_RSI_URL", "http://127.0.0.1:1")
+    response = console.get("/api/rsi/status")
+    assert response.status == 200
+    assert rsi_service == [("GET", "/status", {})]

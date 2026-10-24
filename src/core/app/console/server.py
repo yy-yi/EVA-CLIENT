@@ -2214,7 +2214,9 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
         handler(self)
 
     def _proxy_rsi(self, method: str, path: str, body: dict | None = None) -> None:
-        status, data, content_type = RsiProxy(os.environ.get("EVA_RSI_URL", "")).request(
+        rsi = self.ctx.config.get("rsi")
+        url = rsi["url"] if rsi is not None else os.environ.get("EVA_RSI_URL", "")
+        status, data, content_type = RsiProxy(url).request(
             method, path.removeprefix("/api/rsi"), body
         )
         self._response_status = status

@@ -14,6 +14,7 @@ for _path in (_REPOSITORY_ROOT, _SRC_ROOT):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
+from core.app.console.rsi import RsiBackend  # noqa: E402
 from core.app.run import run  # noqa: E402
 from core.config import ConfigDict, load_config  # noqa: E402
 from core.devices import REPOSITORY_ROOT, DeviceWorkspace  # noqa: E402
@@ -76,9 +77,15 @@ def main() -> None:
     )
     config, web_port, config_path, headless = parse_args()
     language = str((config.get("console") or {}).get("language", "en"))
-    if run(
-        config, web_port=web_port, config_path=config_path, headless=headless, language=language
-    ):
+    try:
+        with RsiBackend(config.get("rsi")):
+            restart = run(
+                config, web_port=web_port, config_path=config_path,
+                headless=headless, language=language,
+            )
+    except KeyboardInterrupt:
+        return
+    if restart:
         os.execv(sys.executable, [sys.executable, *sys.argv])
 
 
