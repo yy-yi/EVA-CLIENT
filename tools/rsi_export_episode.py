@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export one RSI candidate alongside aligned recorded state/RGB, without hardware IO.
+"""Export one RSI prediction alongside aligned recorded state/RGB, without hardware IO.
 
 Uses the Collection/Eval EpisodeLogger format. The action column contains model
 targets; the observations remain independent recorded evidence, never execution
@@ -39,7 +39,7 @@ def export_episode(
     output: Path,
     task_definition: dict[str, Any],
 ) -> dict[str, Any]:
-    """Write a new dataset using only candidate actions and indexed source observations."""
+    """Write model targets and indexed observations, preserving trial review status."""
     prediction = json.loads(predictions.read_text(encoding="utf-8"))
     task = task_definition["prompt_en"]
     robot = ROBOT_REGISTRY.build("dual_yam")
@@ -55,11 +55,24 @@ def export_episode(
         or indices[0] < 0 or not np.isfinite(fps) or fps <= 0 or not task.strip()
     ):
         raise ValueError("candidate requires nonempty finite 14-D actions and contiguous indices")
-    if (
-        prediction["source"] != "agent_reviewed_sandbox_candidate"
-        or not prediction["candidate_id"] or prediction["hardware_executed_steps"] != 0
-    ):
-        raise ValueError("export requires a reviewed, unexecuted recorded-open-loop candidate")
+    prediction_source = prediction["source"]
+    candidate_id = prediction["candidate_id"]
+    trial_id, review = prediction.get("trial_id"), prediction.get("review")
+    if prediction_source == "agent_reviewed_sandbox_candidate":
+        if not candidate_id:
+            raise ValueError("reviewed candidate export requires a nonempty candidate_id")
+        action_semantics = "model_candidate_targets_not_executed"
+    elif prediction_source == "unexported_sandbox_trial":
+        if candidate_id is not None or not isinstance(trial_id, str) or not trial_id.strip():
+            raise ValueError("unexported trial requires candidate_id=null and a nonempty trial_id")
+        action_semantics = "model_sandbox_trial_targets_not_hardware_executed"
+    else:
+        raise ValueError("unsupported RSI prediction source")
+    if (prediction["hardware_executed_steps"] != 0
+            or (review is not None and not isinstance(review, dict))):
+        raise ValueError(
+            "recorded-open-loop export requires zero hardware steps and a review object or null",
+        )
 
     source = LeRobotDatasetIO(dataset_root)
     info = json.loads((dataset_root / "meta/info.json").read_text())
@@ -84,12 +97,13 @@ def export_episode(
 
     metadata = {
         "scope": "recorded_open_loop", "hardware_executed_steps": 0,
-        "action_semantics": "model_candidate_targets_not_executed",
+        "action_semantics": action_semantics,
+        "prediction_source": prediction_source, "trial_id": trial_id, "review": review,
         "feedback": "recorded; independent of predictions",
         "source_dataset_root": str(dataset_root.resolve()), "source_episode_index": episode,
         "source_action_indices": indices.tolist(),
         "source_timestamps": timestamps[indices].tolist(),
-        "candidate_id": prediction["candidate_id"],
+        "candidate_id": candidate_id,
         "observation": prediction["observation"], "control_hz": fps, "task": task.strip(),
         "task_definition": task_definition,
     }

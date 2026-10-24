@@ -101,12 +101,43 @@ def test_export_real_episode_writer_round_trip(recorded_candidate, tmp_path):
         export_episode(source, 0, predictions, output, task)
 
 
+@pytest.mark.parametrize("review", [{"passed": False, "subgoal": "handle grasp failed"}, None])
+def test_unexported_trial_collection_data(recorded_candidate, tmp_path, review):
+    source, predictions, states, actions, video_keys = recorded_candidate
+    payload = json.loads(predictions.read_text())
+    payload.update(source="unexported_sandbox_trial", candidate_id=None,
+                   trial_id="trial_failed_grasp", review=review)
+    predictions.write_text(json.dumps(payload))
+    output = tmp_path / "trial_export"
+    receipt = export_episode(source, 0, predictions, output, {"prompt_en": "Approach the handle"})
+    table = pq.read_table(receipt["parquet"])
+    np.testing.assert_array_equal(table["observations.state.qpos"].to_pylist(), states[1:])
+    np.testing.assert_array_equal(table["action.qpos"].to_pylist(), actions)
+    metadata = json.loads(Path(receipt["metadata"]).read_text())
+    assert metadata["prediction_source"] == "unexported_sandbox_trial"
+    assert metadata["candidate_id"] is None and metadata["trial_id"] == "trial_failed_grasp"
+    assert metadata["review"] == review and metadata["hardware_executed_steps"] == 0
+    assert metadata["action_semantics"] == "model_sandbox_trial_targets_not_hardware_executed"
+    row = json.loads((output / "meta/episodes.jsonl").read_text())
+    assert row["review"] == review and row["candidate_id"] is None
+    assert json.loads((output / "meta/rsi_prediction.json").read_text()) == payload
+    assert set(receipt["videos"]) == set(video_keys)
+    for path in receipt["videos"].values():
+        frames = list(video_frames(Path(path)))
+        assert len(frames) == 3 and all(frame.shape == (32, 32, 3) for frame in frames)
+
+
 @pytest.mark.parametrize("changes", [
     {"actions": [], "action_indices": []},
     {"action_indices": [0, 2, 3]},
     {"action_indices": [2, 3, 4]},
     {"control_hz": 15},
     {"hardware_executed_steps": 1},
+    {"candidate_id": None},
+    {"source": "unexported_sandbox_trial", "candidate_id": None, "trial_id": ""},
+    {"source": "unexported_sandbox_trial", "trial_id": "trial"},
+    {"source": "unexported_sandbox_trial", "candidate_id": None,
+     "trial_id": "trial", "review": False},
 ])
 def test_invalid_candidate_never_creates_episode(recorded_candidate, tmp_path, changes):
     source, predictions, _, _, _ = recorded_candidate
