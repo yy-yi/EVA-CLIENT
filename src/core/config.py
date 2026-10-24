@@ -41,7 +41,7 @@ _COLLECTION_REQUIRED_COLUMNS = ("qpos", "eef", "action_qpos", "action_eef")
 _TELEOP_CONTROL_SOURCES = frozenset({"transport", "client"})
 _ROLLOUT_INTERVENTION_SOURCES = frozenset({"transport", "teleop_client"})
 _CONSOLE_INITIAL_TABS = frozenset(
-    {"auto", "debug", "manual", "collect", "replay", "rl", "eval", "result"}
+    {"auto", "debug", "manual", "collect", "replay", "rl", "rsi", "eval", "result"}
 )
 _SCENE_DATASET_RE = re.compile(
     r"^(?P<base>.+)_scene_(?P<index>[1-9][0-9]*)(?:_(?P<date>[0-9]{8}))?$"

@@ -46,6 +46,7 @@ from core.app.console.collection_slots import (
     select_collection_slot,
 )
 from core.app.console.dashboard import build_dashboard, discover_dashboard_upload_candidates
+from core.app.console.rsi import RsiProxy
 from core.app.console.transform_worker import build_transform_blob
 from core.app.handlers import (
     _resolve_runtime_path,
@@ -2176,6 +2177,9 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         """Route a GET to a stream, static asset, mesh, or registered JSON handler."""
         path = urlparse(self.path).path
+        if path.startswith("/api/rsi/"):
+            self._proxy_rsi("GET", path)
+            return
         # Prefix routes (streams + static assets) come first; they own a path subtree.
         if path in {"/", "/index.html"}:
             self._send_static(
@@ -2208,6 +2212,18 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
             self._send_empty(404)
             return
         handler(self)
+
+    def _proxy_rsi(self, method: str, path: str, body: dict | None = None) -> None:
+        status, data, content_type = RsiProxy(os.environ.get("EVA_RSI_URL", "")).request(
+            method, path.removeprefix("/api/rsi"), body
+        )
+        self._response_status = status
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
 
     # --- GET route handlers (exact-path; registered in _GET_ROUTES) ---
 
@@ -2984,6 +3000,9 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
         """Route a POST to a constant-command enqueue or a body-driven handler."""
         path = urlparse(self.path).path
         body = self._read_json_body()
+        if path.startswith("/api/rsi/"):
+            self._proxy_rsi("POST", path, body)
+            return
         trace_id = self._request_trace_id()
         self._active_trace_id = trace_id
         started = time.monotonic()

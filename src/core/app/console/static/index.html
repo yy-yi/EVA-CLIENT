@@ -44,8 +44,9 @@
     <button class="tab" data-tab="collect"><span class="idx">03</span> COLLECT</button>
     <button class="tab" data-tab="replay"><span class="idx">04</span> REPLAY</button>
     <button class="tab" data-tab="rl"><span class="idx">05</span> RL</button>
-    <button class="tab" data-tab="eval"><span class="idx">06</span> EVAL</button>
-    <button class="tab" data-tab="result"><span class="idx">07</span> RESULT</button>
+    <button class="tab" data-tab="rsi"><span class="idx">06</span> RSI</button>
+    <button class="tab" data-tab="eval"><span class="idx">07</span> EVAL</button>
+    <button class="tab" data-tab="result"><span class="idx">08</span> RESULT</button>
   </div>
 
   <!-- ============ onboarding guide bar ============ -->
@@ -63,6 +64,62 @@
 
   <!-- ============ workspace ============ -->
   <div class="workspace">
+
+    <div class="view" id="view-rsi">
+      <div class="col col-control">
+        <div class="panel">
+          <div class="panel-h"><span class="step-badge">1</span>RSI · 状态</div>
+          <div class="card rsi-status" role="status">
+            <div>服务 <strong id="rsi-service">等待连接</strong></div>
+            <div>建模 / 规划 <strong id="rsi-stage">—</strong></div>
+            <div>仿真 <strong id="rsi-simulation-status">—</strong></div>
+            <div>真机 <strong id="rsi-robot">未连接</strong></div>
+            <div>数据来源 <strong id="rsi-source">—</strong></div>
+            <div>API 参考估算 <strong id="rsi-cost">未知</strong></div>
+            <p id="rsi-cost-scope">计费口径未知；实际账单未知</p>
+            <div>API QPS <strong id="rsi-qps">待测量</strong></div>
+            <div>模型 <strong id="rsi-model">—</strong></div>
+            <div class="errline" id="rsi-error"></div>
+            <div class="errline" id="rsi-missing"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><span class="step-badge">2</span>离线建模 / 规划</div>
+          <div class="card">
+            <div class="btn-grid">
+              <button class="btn primary full" id="rsi-run" disabled>开始离线建模与规划</button>
+              <button class="btn danger full" id="rsi-stop" disabled>取消</button>
+            </div>
+            <p>当前操作仅用于离线评测，不发送真机动作或复位指令。</p>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h"><span class="step-badge">3</span>观测帧</div>
+          <div class="card">
+            <label for="rsi-seek">帧 <span id="rsi-frame-index">—</span></label>
+            <input type="range" id="rsi-seek" min="0" max="0" value="0" disabled />
+            <div class="rsi-qpos" id="rsi-qpos">QPOS —</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h">产物</div>
+          <div class="card" id="rsi-artifacts">暂无产物</div>
+        </div>
+      </div>
+      <div class="col rsi-visuals">
+        <div class="panel">
+          <div class="panel-h">仿真渲染 <span id="rsi-render-source"></span></div>
+          <div class="card rsi-render">
+            <img id="rsi-render" alt="RSI 仿真渲染" hidden />
+            <p id="rsi-render-empty">尚无仿真渲染；CPU 场景预览可在产物中查看。</p>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-h">相机观测</div>
+          <div class="card rsi-cameras" id="rsi-cameras">等待观测帧</div>
+        </div>
+      </div>
+    </div>
 
     <!-- ---- DASHBOARD ---- -->
     <div class="view" id="view-dashboard">

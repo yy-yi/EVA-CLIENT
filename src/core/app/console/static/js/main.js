@@ -9,6 +9,7 @@ import { evalReset, evalSetup, evalRunToggle, evalResumeOnEnter, submitEvalScore
 import { handleVisibilityChange, replayPlay, replayStop, replayToggle, seekReplay, loop, pollFrame, pollScene, refreshCameraStreams, exitReplayMode } from "./replay.js";
 import { pollRlSeries, renderRlConfig, renderRlStatus } from "./rl.js";
 import { initDashboard, loadDashboard } from "./dashboard.js";
+import { initRsi, pollRsi } from "./rsi.js";
 
 const FIXED_COMMANDS = {
   "b-run": "web:run",
@@ -84,7 +85,7 @@ function relocateCanvas(tab) {
     // DEBUG view so its single WebGL context stays alive. EVAL and RL host the same
     // live stage in their dedicated right columns.
     let host;
-    if (tab === "result" || tab === "dashboard") host = $("view-debug");
+    if (tab === "result" || tab === "dashboard" || tab === "rsi") host = $("view-debug");
     else if (tab === "eval") host = $("eval-replay-col");
     else if (tab === "rl") host = $("rl-stage-col");
     else host = $("view-" + tab);
@@ -201,7 +202,8 @@ function setActiveTab(tab) {
     // control column. REPLAY has its own control view and only reuses the WebGL canvas.
     const viewTab = tab === "collect" ? "debug" : tab;
     $("view-" + viewTab).classList.add("active");
-    $("guidebar").style.display = tab === "dashboard" ? "none" : "";
+    $("guidebar").style.display = ["dashboard", "rsi"].includes(tab) ? "none" : "";
+    document.body.classList.toggle("rsi-active", tab === "rsi");
     const transferInfo = $("collect-transfer-info");
     transferInfo.style.display = tab === "collect" && transferInfo.textContent ? "" : "none";
     if (viewTab === "debug") {
@@ -279,12 +281,14 @@ Object.assign(window, { tpToggle, tpSeek, trialPopClose, replayToggle });
 
 async function boot() {
     S.CFG = await waitForBootApi("/api/config");
+    if (S.CFG.initial_tab === "rsi") S.ACTIVE_TAB = "rsi";
     try {
       S.SCENE_PLAN = await apiGet("/api/scene_plan");
     } catch {
       S.SCENE_PLAN = { ok: false, tasks: [], scenes: [], positions: [], objects: [] };
     }
     initDashboard();
+    initRsi();
     installCollectKeyboardControls();
     renderConfig();
     startTeleopFeedbackStream();
@@ -302,7 +306,7 @@ async function boot() {
     }
     // The backend context starts on the same configured workspace.
     const initialTab = S.CFG.initial_tab || "debug";
-    if (initialTab !== S.ACTIVE_TAB) {
+    if (initialTab !== S.ACTIVE_TAB || initialTab === "rsi") {
       setActiveTab(initialTab);
     }
     annotateFixedCommands();
@@ -349,6 +353,7 @@ async function boot() {
     // notices tab switches without adding another high-rate request stream.
     loop(pollEpisodeHistory, 1000);
     loop(pollRlSeries, 100);
+    loop(pollRsi, 1000);
     afterWindowLoad(() => loop(pollFrame, 200));
     loop(pollScene, 80);
   }
@@ -364,7 +369,7 @@ document.querySelectorAll(".tab").forEach((t) => {
       // Soft reset on every tab switch. COLLECT teleop is armed only after the
       // local motion gate is switched on; START RECORD still controls recording.
       if (tab !== "collect") disarmCollectArm();
-      apiPost("/api/tab_switch", { tab });
+      if (tab !== "rsi") apiPost("/api/tab_switch", { tab });
       // Leaving MANUAL: drop both the SIM-debug flag and any real-robot link so
       // re-entering starts fresh (SIM debug auto-arms, REAL needs CONNECT again).
       S.manualActive = false;
@@ -376,7 +381,7 @@ document.querySelectorAll(".tab").forEach((t) => {
       // reset/warmup motion and clears it) so the new tab starts from a clean idle state
       // instead of finishing a setup for the tab we just left. _setupFired stays true so
       // it doesn't immediately re-fire; clear any pause latch so the new tab can auto-setup.
-      if (S.STATUS && S.STATUS.setup_stage) { apiPost("/api/halt"); S._setupFired = true; }
+      if (tab !== "rsi" && S.STATUS && S.STATUS.setup_stage) { apiPost("/api/halt"); S._setupFired = true; }
       S._setupPaused = false;
       setActiveTab(tab);
     });

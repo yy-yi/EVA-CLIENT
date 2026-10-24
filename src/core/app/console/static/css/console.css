@@ -553,6 +553,24 @@
   /* canvas views: control column | vertical instrument stage (3D+cams / action / state) */
   #view-debug   { grid-template-columns: 420px 1fr; gap: 0; }
   #view-rl      { grid-template-columns: 420px 1fr; gap: 0; }
+  #view-rsi     { grid-template-columns: 420px 1fr; gap: 0; }
+  .rsi-active .telemetry > :not(.brand) { display: none; }
+  .rsi-status > div { margin-bottom: 8px; }
+  .rsi-status strong { float: right; }
+  #rsi-missing { white-space: pre-line; }
+  .rsi-visuals { min-width: 0; }
+  .rsi-render { text-align: center; min-height: 300px; }
+  .rsi-render img { width: 100%; max-height: 65vh; object-fit: contain; }
+  .rsi-cameras { display: flex; flex-wrap: wrap; gap: 12px; }
+  .rsi-cameras > div { flex: 1 1 200px; min-width: 0; }
+  .rsi-cameras img, #rsi-artifacts img { width: 100%; object-fit: contain; }
+  #rsi-artifacts a { display: block; margin-block: 8px; }
+  #rsi-seek { width: 100%; }
+  .rsi-qpos { overflow-wrap: anywhere; margin-top: 8px; }
+  @media (max-width: 760px) {
+    #view-rsi { grid-template-columns: minmax(0, 1fr); overflow-y: auto; }
+    #view-rsi > .col { overflow: visible; }
+  }
   #view-replay  { grid-template-columns: 420px 1fr; gap: 0; }
   #view-manual  { grid-template-columns: 420px 1fr; gap: 0; }
   #collect-control-col { display: none; }

@@ -431,6 +431,7 @@ function autoSetup(ready, done, errored) {
 
 function updateGuide() {
     if (!S.CFG) return;
+    if (S.ACTIVE_TAB === "rsi") return;
     const s = S.STATUS || {};
     // The replay status line lives in the banner; only show it on the REPLAY tab.
     const epTask = $("replay-episode-task");
@@ -983,6 +984,7 @@ function renderRlGripper(enabled) {
   }
 
 function renderConfig() {
+    if (S.ACTIVE_TAB === "rsi") return;
     $("t-robot").textContent = S.CFG.robot_type || "—";
     renderGripperButtons();
     $("prompt-title").textContent = "TASK";
