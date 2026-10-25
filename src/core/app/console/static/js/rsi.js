@@ -31,6 +31,14 @@ function artifactLink(item) {
   return link;
 }
 
+function setEmpty(host) {
+  host.replaceChildren();
+  const box = document.createElement("div");
+  box.className = "rsi-empty";
+  box.textContent = host.dataset.empty || "";
+  host.appendChild(box);
+}
+
 function renderArtifacts(items) {
   const key = JSON.stringify(items);
   if (key === artifactsKey) return;
@@ -38,10 +46,14 @@ function renderArtifacts(items) {
   const host = $("rsi-artifacts");
   host.replaceChildren();
   $("rsi-artifact-count").textContent = String(items.length);
-  if (!items.length) host.textContent = "暂无产物";
+  if (!items.length) {
+    setEmpty(host);
+    return;
+  }
   for (const item of items) {
     const cell = document.createElement("div");
     cell.className = "rsi-artifact";
+    cell.dataset.kind = item.kind;
     const link = artifactLink(item);
     cell.appendChild(link);
     if (item.kind === "image") {
@@ -61,7 +73,8 @@ function renderFrame(frame) {
   const names = (S.CFG && S.CFG.camera_keys) || Object.keys(frame.cameras || {});
   if (host.dataset.names !== JSON.stringify(names)) {
     host.replaceChildren();
-    for (const name of names) {
+    if (!names.length) setEmpty(host);
+    else for (const name of names) {
       const cell = document.createElement("figure");
       const label = document.createElement("figcaption");
       label.textContent = name;
@@ -73,10 +86,10 @@ function renderFrame(frame) {
       cell.append(image, label);
       host.appendChild(cell);
     }
-    if (!names.length) host.textContent = "暂无相机观测";
     host.dataset.names = JSON.stringify(names);
   }
   const available = frame.simulation.available && !!frame.simulation.image;
+  $("rsi-render").parentElement.dataset.ready = String(available);
   $("rsi-render").hidden = !available;
   $("rsi-render-empty").hidden = !!available;
   if (available) $("rsi-render").src = "data:image/jpeg;base64," + frame.simulation.image;
@@ -99,6 +112,8 @@ function renderTasks(payload) {
   $("rsi-task-count").textContent = String(tasks.length);
   const selected = tasks.find((task) => task.task_id === selectedTaskId);
   $("rsi-task-preview").textContent = selected ? selected.prompt_en : "选择任务后开始推理。";
+  $("rsi-preview-task").textContent = selected
+    ? selected.prompt_zh || selected.prompt_en : "选择任务，连接相机，获取当前环境与机器人状态。";
   $("rsi-task-name").value = selected ? selected.task_id : "";
   $("rsi-task-prompt").value = selected ? selected.prompt_en : "";
 }
@@ -132,6 +147,7 @@ function renderClient(client) {
     button.setAttribute("aria-pressed", String(selected));
   });
   $("rsi-execution-status").textContent = client.mode === "auto" && autoArmed ? "AUTO · REPLAY → SEND" : "MANUAL REVIEW";
+  $("rsi-execution-status").dataset.state = client.mode === "auto" && autoArmed ? "run" : "off";
   $("rsi-execution-note").textContent = client.mode === "auto" && autoArmed
     ? "新候选通过仿真回放后自动发送；STOP 随时停止。"
     : "推理不会自动驱动真机。先仿真回放，再点击 SEND TO REAL。";
@@ -141,6 +157,13 @@ function renderClient(client) {
 function candidateMatchesTask(candidate) {
   const selected = tasks.find((task) => task.task_id === selectedTaskId);
   return candidate?.task_id === selectedTaskId && candidate?.task_prompt === selected?.prompt_en;
+}
+
+function updateSeekFill() {
+  const seek = $("rsi-seek");
+  const max = Number(seek.max) || 0;
+  const pct = max > 0 ? (Number(seek.value) / max) * 100 : 0;
+  seek.style.setProperty("--pct", pct + "%");
 }
 
 function updateControls() {
@@ -180,10 +203,42 @@ function renderStatus(status) {
   $("rsi-missing").textContent = status.missing.length ? "缺少配置：\n" + status.missing.join("\n") : "";
   $("rsi-seek").max = Math.max(0, status.episode.length - 1);
   $("rsi-seek").value = status.episode.index;
+  updateSeekFill();
   $("rsi-frame-index").textContent = status.episode.length
     ? `${status.episode.index} / ${status.episode.length} · ${status.episode.fps} Hz`
     : "无录制回放";
+  renderWorkbench(status);
   updateControls();
+}
+
+function renderWorkbench(status) {
+  const session = status.session;
+  const replay = status.replay;
+  const running = status.operation_active;
+  const stages = [
+    ["observe", session.baseline ? "done" : "pending", session.baseline ? "已读取" : "待观测"],
+    ["scene", status.simulation.available ? "done" : running ? "active" : "pending",
+      status.simulation.available ? "已导入" : running ? "处理中" : "待重建"],
+    ["replay", replay.status === "completed" ? "done" : replay.status === "running" ? "active" : "pending",
+      replay.status === "running" ? `回放 ${replay.steps} 步` : replay.status === "completed" ? "已回放"
+        : replay.status === "failed" ? "回放失败" : replay.status === "stopped" ? "已停止"
+          : latestCandidate?.review_passed ? "可回放" : "待候选"],
+  ];
+  for (const [name, state, text] of stages) {
+    const row = $("rsi-progress-" + name);
+    row.dataset.state = state;
+    row.querySelector("b").textContent = text;
+  }
+  $("rsi-preview-title").textContent = status.error ? "运行需要处理"
+    : running ? "正在处理当前场景" : "准备重建当前场景";
+  $("rsi-preview-hint").textContent = status.error || (status.missing.length
+    ? "待配置：" + status.missing.join("；")
+    : running ? "当前阶段：" + status.stage + "。渲染结果就绪后将在这里显示。"
+      : "选择任务并开始推理，场景导入后即可查看仿真画面与候选动作回放。");
+  $("rsi-preview-source").textContent = status.robot.source === "dataset"
+    ? "DATASET · TEST" : status.robot.source;
+  $("rsi-preview-version").textContent = session.scene_version ? "v" + session.scene_version : "尚未导入";
+  $("rsi-preview-steps").textContent = `${status.simulation.steps} / ${status.simulation.limit}`;
 }
 
 function renderRuns(items) {
@@ -193,11 +248,15 @@ function renderRuns(items) {
   const host = $("rsi-runs");
   host.replaceChildren();
   $("rsi-run-count").textContent = String(items.length);
-  if (!items.length) host.textContent = "暂无推理记录";
+  if (!items.length) {
+    setEmpty(host);
+    return;
+  }
   for (const item of items) {
     const button = document.createElement("button");
     button.className = "btn rsi-run-item";
     button.dataset.runId = item.id;
+    button.dataset.state = item.status;
     button.classList.toggle("selected", item.id === selectedRunId);
     const label = document.createElement("span");
     label.textContent = `${item.task.prompt || item.task.prompt_en} · ${item.started_at}`;
@@ -315,6 +374,8 @@ async function pollRsi() {
       badge("rsi-robot", "UNKNOWN", "off");
       $("rsi-transport").textContent = "连接状态暂不可读";
     }
+    $("rsi-preview-title").textContent = "等待服务连接";
+    $("rsi-preview-hint").textContent = error.message;
     updateControls();
   } finally {
     polling = false;
@@ -379,6 +440,7 @@ function initRsi() {
   $("rsi-home").onclick = handle(() => command("home"));
   $("rsi-replay").onclick = handle(() => command("replay", { candidate_id: latestCandidate.candidate_id }));
   $("rsi-send").onclick = handle(() => command("send", { candidate_id: latestCandidate.candidate_id }));
+  $("rsi-seek").oninput = updateSeekFill;
   $("rsi-seek").onchange = handle(() => command("seek", { index: Number($("rsi-seek").value) }));
   $("rsi-task-list").onchange = handle(() => selectTask($("rsi-task-list").value), "rsi-task-error");
   $("rsi-task-save").onclick = handle(saveTask, "rsi-task-error");
@@ -389,6 +451,8 @@ function initRsi() {
   });
   $("rsi-device").onclick = () => document.querySelector('.tab[data-tab="manual"]').click();
   $("rsi-dashboard").onclick = () => document.querySelector('.tab[data-tab="dashboard"]').click();
+  $("rsi-preview-device").onclick = () => $("rsi-device").click();
+  $("rsi-preview-select-task").onclick = () => $("rsi-task-list").focus();
   setCommandMetadata($("rsi-home"), "web:halt|web:rsi_home:{generation}", true);
   setCommandMetadata($("rsi-stop"), "web:halt");
 }

@@ -144,12 +144,28 @@
             <div class="panel-h">SIMULATION <span class="n" id="rsi-render-source"></span></div>
             <div class="card rsi-render">
               <img id="rsi-render" alt="RSI 仿真渲染" hidden />
-              <div id="rsi-render-empty"><span class="rsi-empty-symbol">SIM</span><p>等待场景重建与仿真回放</p><small>运行推理后将在这里显示仿真视角。</small></div>
+              <div id="rsi-render-empty">
+                <div class="sub-h">SCENE WORKBENCH</div>
+                <h2 id="rsi-preview-title">准备重建当前场景</h2>
+                <p id="rsi-preview-task">选择任务，连接相机，获取当前环境与机器人状态。</p>
+                <ol class="rsi-pipeline" aria-label="场景与回放进度">
+                  <li id="rsi-progress-observe" data-state="pending"><span>01</span><div><strong>环境观测</strong><small>读取相机画面与关节状态</small></div><b>待观测</b></li>
+                  <li id="rsi-progress-scene" data-state="pending"><span>02</span><div><strong>场景重建</strong><small>建立物体、机械臂与相机关系</small></div><b>待重建</b></li>
+                  <li id="rsi-progress-replay" data-state="pending"><span>03</span><div><strong>仿真回放</strong><small>在发送真机前检查候选动作</small></div><b>待候选</b></li>
+                </ol>
+                <p class="rsi-preview-hint" id="rsi-preview-hint" role="status">场景导入后显示仿真视角；当前尚无渲染结果。</p>
+                <div class="rsi-preview-actions"><button class="btn" id="rsi-preview-device">连接设备</button><button class="btn" id="rsi-preview-select-task">选择任务</button></div>
+              </div>
+            </div>
+            <div class="rsi-preview-metrics">
+              <div><span>观测来源</span><strong id="rsi-preview-source">未确认</strong></div>
+              <div><span>场景版本</span><strong id="rsi-preview-version">尚未导入</strong></div>
+              <div><span>仿真步数</span><strong id="rsi-preview-steps">—</strong></div>
             </div>
           </div>
           <div class="panel rsi-camera-panel">
             <div class="panel-h">OBSERVATION <span class="n">RGB</span></div>
-            <div class="rsi-cameras" id="rsi-cameras">等待观测帧</div>
+            <div class="rsi-cameras" id="rsi-cameras" data-empty="等待观测帧"></div>
           </div>
         </div>
         <div class="panel">
@@ -160,17 +176,19 @@
             <div class="rsi-qpos mono" id="rsi-qpos">QPOS —</div>
           </div>
         </div>
-        <div class="panel">
-          <div class="panel-h">SAVED RUNS <span class="n" id="rsi-run-count">0</span></div>
-          <div class="card">
-            <p class="rsi-note">每次推理自动保存轨迹、状态、相机视角与模型过程。中止的运行也保留已生成的记录。</p>
-            <div id="rsi-runs" class="rsi-run-list">暂无推理记录</div>
-            <div class="rsi-run-detail" id="rsi-run-detail" hidden></div>
+        <div class="rsi-lower">
+          <div class="panel">
+            <div class="panel-h">SAVED RUNS <span class="n" id="rsi-run-count">0</span></div>
+            <div class="card">
+              <p class="rsi-note">每次推理自动保存轨迹、状态、相机视角与模型过程。中止的运行也保留已生成的记录。</p>
+              <div id="rsi-runs" class="rsi-run-list" data-empty="暂无推理记录"></div>
+              <div class="rsi-run-detail" id="rsi-run-detail" hidden></div>
+            </div>
           </div>
-        </div>
-        <div class="panel">
-          <div class="panel-h">ARTIFACTS · MODEL PROCESS <span class="n" id="rsi-artifact-count">0</span></div>
-          <div class="card" id="rsi-artifacts">暂无产物</div>
+          <div class="panel">
+            <div class="panel-h">ARTIFACTS · MODEL PROCESS <span class="n" id="rsi-artifact-count">0</span></div>
+            <div class="card" id="rsi-artifacts" data-empty="暂无产物"></div>
+          </div>
         </div>
       </div>
     </div>
