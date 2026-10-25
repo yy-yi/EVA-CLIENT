@@ -8,6 +8,7 @@ import shutil
 import signal
 import subprocess
 import time
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
@@ -82,6 +83,124 @@ class RsiBackend:
         finally:
             if self.previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, self.previous_sigterm)
+
+
+def _port_listening_pids(port: int) -> set[int]:
+    """PIDs owning a LISTEN socket on *port*; a /proc walk, so Linux-only by design."""
+    if not os.path.isdir("/proc/net"):
+        return set()
+    inodes: set[str] = set()
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 10 or fields[3] != "0A":  # 0A == TCP_LISTEN
+                continue
+            if int(fields[1].rsplit(":", 1)[1], 16) == port:
+                inodes.add(fields[9])
+    pids: set[int] = set()
+    for entry in os.scandir("/proc"):
+        if not entry.name.isdigit():
+            continue
+        try:
+            descriptors = list(os.listdir(f"{entry.path}/fd"))
+        except OSError:  # other users' processes stay invisible — and untouched
+            continue
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(f"{entry.path}/fd/{descriptor}")
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target[8:-1] in inodes:
+                pids.add(int(entry.name))
+                break
+    return pids
+
+
+def _process_args(pid: int) -> list[str]:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return []
+    return [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+
+
+def _matches_backend_command(args: list[str], command: list[str]) -> bool:
+    """The process runs the exact backend script we are about to start, for our runtime."""
+    script = command[1] if len(command) > 1 else None
+    if script is None or not any(arg == script or arg.endswith("/" + Path(script).name) for arg in args):
+        return False
+    if "--config" in command:
+        runtime = command[command.index("--config") + 1]
+        return runtime in args
+    return True
+
+
+def _matches_console_command(args: list[str], config_path: str | None) -> bool:
+    """An eva console entry point launched with this same --config (execv restarts included)."""
+    if not args:
+        return False
+    if config_path is not None and config_path not in args:
+        return False
+    return Path(args[0]).name == "eva" or any(arg.endswith("/src/main.py") for arg in args)
+
+
+def reclaim_stale_services(rsi: dict | None, web_port: int | None,
+                           config_path: str | None) -> list[int]:
+    """Terminate leftover console/backend processes of this workspace before launch.
+
+    Discovery is by port ownership (whoever listens on the RSI URL and web ports), and a
+    candidate is only signalled when its command line is recognizably this workspace's
+    console or the backend command we are about to start. Foreign services are left
+    untouched; RsiBackend keeps refusing those.
+    """
+    if rsi is None or not rsi.get("command"):
+        return []
+    ports: list[int] = []
+    try:
+        url_port = urlsplit(rsi.get("url", "")).port
+    except ValueError:
+        url_port = None
+    if url_port:
+        ports.append(url_port)
+    if web_port:
+        ports.append(web_port)
+    stale: set[int] = set()
+    for port in ports:
+        for pid in _port_listening_pids(port):
+            if pid == os.getpid():
+                continue
+            args = _process_args(pid)
+            if (_matches_backend_command(args, rsi["command"])
+                    or _matches_console_command(args, config_path)):
+                stale.add(pid)
+    if not stale:
+        return []
+
+    def _signal(pids: set[int], sig: int) -> None:
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def _ports_free() -> bool:
+        return not any(_port_listening_pids(port) for port in ports)
+
+    _signal(stale, signal.SIGTERM)
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline and not _ports_free():
+        time.sleep(0.2)
+    remaining = {pid for pid in stale if Path(f"/proc/{pid}").exists()}
+    if remaining:
+        _signal(remaining, signal.SIGKILL)
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not _ports_free():
+            time.sleep(0.1)
+    return sorted(stale)
 
 
 class RsiProxy:

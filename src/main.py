@@ -14,7 +14,7 @@ for _path in (_REPOSITORY_ROOT, _SRC_ROOT):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
 
-from core.app.console.rsi import RsiBackend  # noqa: E402
+from core.app.console.rsi import RsiBackend, reclaim_stale_services  # noqa: E402
 from core.app.run import run  # noqa: E402
 from core.config import ConfigDict, load_config  # noqa: E402
 from core.devices import REPOSITORY_ROOT, DeviceWorkspace  # noqa: E402
@@ -77,6 +77,13 @@ def main() -> None:
     )
     config, web_port, config_path, headless = parse_args()
     language = str((config.get("console") or {}).get("language", "en"))
+    if not headless and config.get("rsi"):
+        # The RSI backend polls this console for live workspace observations.
+        os.environ["EVA_CONSOLE_URL"] = f"http://127.0.0.1:{web_port}"
+    stale = reclaim_stale_services(config.get("rsi"), web_port, config_path)
+    if stale:
+        logging.getLogger(__name__).info(
+            "Reclaimed stale RSI workspace processes: %s", ", ".join(map(str, stale)))
     try:
         with RsiBackend(config.get("rsi")):
             restart = run(

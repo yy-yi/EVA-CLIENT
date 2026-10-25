@@ -58,7 +58,7 @@ function renderArtifacts(items) {
 function renderFrame(frame) {
   $("rsi-qpos").textContent = "QPOS " + frame.qpos.map((value) => Number(value).toFixed(3)).join(" · ");
   const host = $("rsi-cameras");
-  const names = Object.keys(frame.cameras);
+  const names = (S.CFG && S.CFG.camera_keys) || Object.keys(frame.cameras || {});
   if (host.dataset.names !== JSON.stringify(names)) {
     host.replaceChildren();
     for (const name of names) {
@@ -67,15 +67,15 @@ function renderFrame(frame) {
       label.textContent = name;
       const image = document.createElement("img");
       image.alt = name;
+      // Always show the live transport camera stream (real cameras on hardware, the
+      // replay feed locally); the multipart JPEG connection refreshes itself.
+      image.src = "/api/camera/" + encodeURIComponent(name);
       cell.append(image, label);
       host.appendChild(cell);
     }
     if (!names.length) host.textContent = "暂无相机观测";
     host.dataset.names = JSON.stringify(names);
   }
-  host.querySelectorAll("img").forEach((image, index) => {
-    image.src = "data:image/jpeg;base64," + frame.cameras[names[index]];
-  });
   const available = frame.simulation.available && !!frame.simulation.image;
   $("rsi-render").hidden = !available;
   $("rsi-render-empty").hidden = !!available;
@@ -168,7 +168,9 @@ function renderStatus(status) {
   badge("rsi-service", status.status.toUpperCase(), status.status === "running" ? "run" : status.status === "failed" ? "warn" : "ok");
   $("rsi-stage").textContent = status.stage;
   badge("rsi-simulation-status", status.simulation.status, status.simulation.available ? "ok" : "off");
-  $("rsi-source").textContent = `${status.robot.source} · episode ${status.episode.id}`;
+  $("rsi-source").textContent = status.episode.id != null
+    ? `${status.robot.source} · episode ${status.episode.id}`
+    : `${status.robot.type} · 实时相机`;
   $("rsi-cost").textContent = status.api.cost_usd == null ? "未知" : "$" + status.api.cost_usd;
   $("rsi-cost-scope").textContent = (status.api.cost_scope || "计费口径未知") + "；实际账单未知";
   $("rsi-qps").textContent = status.api.qps == null ? "待测量" : status.api.qps;
@@ -178,7 +180,9 @@ function renderStatus(status) {
   $("rsi-missing").textContent = status.missing.length ? "缺少配置：\n" + status.missing.join("\n") : "";
   $("rsi-seek").max = Math.max(0, status.episode.length - 1);
   $("rsi-seek").value = status.episode.index;
-  $("rsi-frame-index").textContent = `${status.episode.index} / ${status.episode.length} · ${status.episode.fps} Hz`;
+  $("rsi-frame-index").textContent = status.episode.length
+    ? `${status.episode.index} / ${status.episode.length} · ${status.episode.fps} Hz`
+    : "无录制回放";
   updateControls();
 }
 

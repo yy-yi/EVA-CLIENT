@@ -6,12 +6,19 @@ import json
 import os
 import signal
 import socket
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
-from core.app.console.rsi import RsiBackend, RsiProxy
+from core.app.console.rsi import (
+    RsiBackend,
+    RsiProxy,
+    _matches_console_command,
+    reclaim_stale_services,
+)
 from core.config import load_config
 
 pytestmark = pytest.mark.integration
@@ -105,8 +112,7 @@ def test_yam_config_reads_runtime_paths_without_loading_credentials(tmp_path, mo
     agent = tmp_path / "agent"
     agent.mkdir()
     runtime = tmp_path / "runtime.json"
-    runtime.write_text(json.dumps({"dataset_root": str(tmp_path / "dataset"),
-                                  "episode": 40, "service_port": 18810}))
+    runtime.write_text(json.dumps({"service_port": 18810}))
     credentials = tmp_path / "credentials.json"
     credentials.write_text("{}")
     monkeypatch.setenv("EVA_RSI_ROOT", str(agent))
@@ -115,12 +121,11 @@ def test_yam_config_reads_runtime_paths_without_loading_credentials(tmp_path, mo
     monkeypatch.setenv("JAX_PLATFORMS", "cuda")
     config = load_config(ROOT / "configs/rsi/yam.py")
     assert config.console.initial_tab == "rsi" and config.robot.type == "dual_yam"
-    assert config.transport.type == "dataset" and config.transport.episode_id == 40
-    assert config.transport.dataset_dir == str(tmp_path / "dataset")
+    # No dataset transport is configured: the console shows live transport cameras only.
+    assert config.transport.get("type") != "dataset"
+    assert not config.transport.get("dataset_dir")
+    assert not config.transport.get("episode_id")
     assert len(config.robot.initial_qpos) == 14
-    assert set(config.transport.dataset_keys.video_keys) == {
-        "cam_high", "cam_left_wrist", "cam_right_wrist",
-    }
     assert config.inference_cfg.setup_warmup_chunks == 0 and not config.rollout.storage.enabled
     assert config.rsi.url == "http://127.0.0.1:18810" and config.rsi.cwd == str(agent)
     assert config.rsi.command[:4] == [str(agent / ".venv/bin/python"),
@@ -167,3 +172,48 @@ def test_main_interrupt_cleans_backend_and_returns_without_traceback(backend_con
     monkeypatch.setattr(entry, "run", interrupt)
     assert entry.main() is None
     assert RsiProxy(backend_config["url"]).request("GET", "/status")[0] == 502
+
+
+def test_reclaim_stale_services_removes_own_backend_and_leaves_foreign_listeners(backend_config):
+    # A backend left behind by a crashed console (exact configured command, no owning
+    # context) must be reclaimed; an unrelated listener on the web port must survive.
+    stale = subprocess.Popen(backend_config["command"], cwd=backend_config["cwd"],
+                             start_new_session=True)
+    with socket.socket() as unused:
+        unused.bind(("127.0.0.1", 0))
+        web_port = unused.getsockname()[1]
+    foreign = subprocess.Popen([sys.executable, "-m", "http.server", str(web_port)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if RsiProxy(backend_config["url"]).request("GET", "/status")[0] == 200:
+                break
+            time.sleep(0.1)
+        assert RsiProxy(backend_config["url"]).request("GET", "/status")[0] == 200
+
+        killed = reclaim_stale_services(backend_config, web_port, "yam.py")
+
+        assert stale.pid in killed
+        assert foreign.pid not in killed
+        assert stale.wait(timeout=10) == 0
+        assert foreign.poll() is None
+    finally:
+        foreign.terminate()
+        foreign.wait()
+        if stale.poll() is None:
+            stale.terminate()
+            stale.wait()
+
+
+def test_reclaim_matches_console_cmdlines_including_execv_restarts():
+    assert _matches_console_command(
+        ["/x/.venv/bin/python", "/x/src/main.py", "--config", "configs/rsi/yam.py"],
+        "configs/rsi/yam.py")
+    assert _matches_console_command(
+        ["/x/.venv/bin/eva", "--config", "configs/rsi/yam.py"], "configs/rsi/yam.py")
+    assert not _matches_console_command(
+        ["/x/.venv/bin/python", "/x/src/main.py", "--config", "configs/other.py"],
+        "configs/rsi/yam.py")
+    assert not _matches_console_command(
+        ["/usr/bin/python", "-m", "http.server", "8080"], None)

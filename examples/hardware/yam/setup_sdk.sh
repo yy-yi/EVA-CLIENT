@@ -8,7 +8,7 @@ SDK_RELATIVE_DIR="examples/hardware/yam/SDK/i2rt"
 SDK_DIR="$REPOSITORY_ROOT/$SDK_RELATIVE_DIR"
 PROJECT_DIR="$PWD/examples/hardware/yam"
 VENV_DIR="${YAM_VENV_DIR:-$PROJECT_DIR/.venv}"
-YAM_REVISION="5dab60a49d3b59e2ae9c46b117765ef20e2f1699"
+YAM_REVISION="de618cdcbacfdf9bee807a34387ffc7e0bedecf0"
 YAM_RELEASE="YAM main"
 
 if ! command -v uv >/dev/null 2>&1; then

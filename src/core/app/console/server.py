@@ -9,6 +9,7 @@ from the robot's URDF, served via /api/scene + /api/meshes).
 
 from __future__ import annotations
 
+import base64
 import concurrent.futures
 import copy
 import dataclasses
@@ -1672,6 +1673,26 @@ def _serialize_frame(ctx: ConsoleContext) -> dict:
     return out
 
 
+def _serialize_observation(ctx: ConsoleContext) -> dict:
+    # One complete live snapshot (qpos + every camera JPEG) for the RSI backend's live
+    # source. Heavier than /api/frame by design: the backend polls it slowly, while the
+    # UI keeps using /api/frame + MJPEG streams.
+    reader = _observation_reader(ctx)
+    convert = ctx.config.transport.convert_bgr_to_rgb
+    cameras: dict[str, str] = {}
+    for key in _list_camera_keys(ctx):
+        jpeg, _ = _camera_jpeg_payload(reader, key, convert, None)
+        if jpeg is not None:
+            cameras[key] = base64.b64encode(jpeg).decode("ascii")
+    qpos = reader.get_latest_qpos()
+    return {
+        "ok": True,
+        "qpos": None if qpos is None else np.asarray(qpos, dtype=float).tolist(),
+        "cameras": cameras,
+        "timestamp": time.time(),
+    }
+
+
 def _serialize_scene(ctx: ConsoleContext) -> dict:
     # Per-frame 3D state: dual-arm per-mesh world transforms from the latest qpos.
     # Cache by qpos signature so a static arm doesn't re-run forward kinematics each poll.
@@ -2596,6 +2617,9 @@ class ConsoleRequestHandler(BaseHTTPRequestHandler):
 
     def _get_frame(self) -> None:
         self._send_json(200, _serialize_frame(self.ctx))
+
+    def _get_observation(self) -> None:
+        self._send_json(200, _serialize_observation(self.ctx))
 
     def _get_scene(self) -> None:
         self._send_json(200, _serialize_scene(self.ctx))
@@ -4223,6 +4247,7 @@ _GET_ROUTES = {
     "/api/collect_quality_export": ConsoleRequestHandler._get_collect_quality_export,
     "/api/collect_quality_upload": ConsoleRequestHandler._get_collect_quality_upload,
     "/api/frame": ConsoleRequestHandler._get_frame,
+    "/api/observation": ConsoleRequestHandler._get_observation,
     "/api/scene": ConsoleRequestHandler._get_scene,
     "/api/manual_scene": ConsoleRequestHandler._get_manual_scene,
     "/api/meshes": ConsoleRequestHandler._get_meshes,

@@ -31,17 +31,6 @@ rsi = dict(url=f"http://127.0.0.1:{__runtime['service_port']}", command=__comman
            initial_tasks=__runtime.get("tasks", []))
 console = dict(initial_tab="rsi")
 robot = dict(type="dual_yam")
-transport = dict(
-    type="dataset", dataset_dir=__runtime["dataset_root"], episode_id=__runtime["episode"],
-    convert_bgr_to_rgb=True, image_height=480, image_width=640,
-    resize_pad=False, image_layout="hwc",
-    dataset_keys=dict(
-        state_key="observations.state.qpos", action_key="action.qpos",
-        video_keys=dict(cam_high="observation.images.cam_high",
-                        cam_left_wrist="observation.images.cam_left_wrist",
-                        cam_right_wrist="observation.images.cam_right_wrist"),
-    ),
-)
 rollout = dict(storage=dict(enabled=False))
 inference_cfg = dict(obs_space=dict(type="JointState"), action_space=dict(type="JointState"),
                      setup_warmup_chunks=0)
